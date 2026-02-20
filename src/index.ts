@@ -1,7 +1,8 @@
-import { createOpenAIAgent } from "./agent";
+import { createInMemoryAgentRuntime, createOpenAIAgent } from "./agent";
 import {
-  createMentionMeTriggerStrategy,
+  createMentionMeTriggerPolicy,
   createMessageGateway,
+  createReplyToMeTriggerPolicy,
 } from "./gateway";
 import { createTelegramAdapter } from "./telegram/adapter";
 
@@ -17,11 +18,13 @@ if (!API_KEY) {
 
 const telegram = createTelegramAdapter(BOT_TOKEN);
 const agent = createOpenAIAgent({ model: "deepseek-chat", baseURL: "https://api.deepseek.com/v1", apiKey: API_KEY });
+const runtime = createInMemoryAgentRuntime({ agent });
 const gateway = createMessageGateway({
   telegram,
-  agent,
-  strategies: [
-    createMentionMeTriggerStrategy(),
+  runtime,
+  policies: [
+    createReplyToMeTriggerPolicy(),
+    createMentionMeTriggerPolicy(),
   ],
 });
 

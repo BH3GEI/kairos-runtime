@@ -1,18 +1,18 @@
 import type { GatewayTriggerPolicy } from "../types";
 
-export function createMentionMeTriggerPolicy(): GatewayTriggerPolicy {
+export function createReplyToMeTriggerPolicy(): GatewayTriggerPolicy {
   return {
-    name: "MentionMe",
-    priority: 20,
+    name: "ReplyToMe",
+    priority: 10,
     decide: (message) => {
-      if (!message.metadata.isMentionMe) {
+      if (!message.metadata.isReplyToMe) {
         return { shouldTrigger: false, reason: "none" };
       }
       const prompt = message.context.trim();
       if (!prompt) {
         return { shouldTrigger: false, reason: "none" };
       }
-      return { shouldTrigger: true, reason: "mention_me", prompt };
+      return { shouldTrigger: true, reason: "reply_to_me", prompt };
     },
   };
 }

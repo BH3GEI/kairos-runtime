@@ -132,7 +132,8 @@ function toTelegramMessage(ctx: Context): TelegramMessage | null {
       username: message.from?.username ?? null,
       replyToMessageId: message.reply_to_message?.message_id ?? null,
       replyToUserId: message.reply_to_message?.from?.id?.toString() ?? null,
-      isMentionMe: message.reply_to_message?.from?.id == ctx.me.id || isMentionMe(ctx),
+      isReplyToMe: message.reply_to_message?.from?.id === ctx.me.id,
+      isMentionMe: isMentionMe(ctx),
       mentions: extractMentions(message),
     },
   };
