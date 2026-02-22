@@ -9,6 +9,8 @@ const MEMORY_DIR = resolve(CURRENT_DIR, "../memory_files");
 export const system = () => {
     const soulContent = readFileSync(resolve(MEMORY_DIR, "Soul.md"), "utf8");
     const identityContent = readFileSync(resolve(MEMORY_DIR, "Identity.md"), "utf8");
+    const toolsContent = readFileSync(resolve(MEMORY_DIR, "Tools.md"), "utf8");
+    
     return `
     You are a AI Agent, now you wake up.
 
@@ -26,5 +28,7 @@ export const system = () => {
     ${soulContent}
     # Identity.md
     ${identityContent}
+    # Tools.md
+    ${toolsContent}
     `;
 }

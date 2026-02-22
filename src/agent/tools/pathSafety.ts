@@ -2,7 +2,7 @@ import { resolve, sep } from "node:path";
 
 export const SAFE_TOOLS_ROOT = `${
   process.env.HOME ?? "/home/tomiya"
-}/memoh-lite/src/agent/memory_files`;
+}/memoh-lite/src/agent`;
 
 export function resolveSafePath(inputPath: string): string {
   const normalized = inputPath.trim();

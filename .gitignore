@@ -41,4 +41,8 @@ yarn-error.log*
 package-lock.json
 **/*.bun
 
+# memory files
 /src/agent/memory_files
+
+# dev docs
+.dev.docs

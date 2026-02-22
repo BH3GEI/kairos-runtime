@@ -1,6 +1,9 @@
 import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
 import { streamSimple, type ProviderStreamOptions } from "@mariozechner/pi-ai";
 import type { Model } from "@mariozechner/pi-ai";
+import { writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -34,6 +37,8 @@ export interface OpenAIAgent {
 const DEFAULT_MODEL = "gpt-4o-mini";
 const DEFAULT_BASE_URL = "https://api.deepseek.com/v1";
 const DEFAULT_PROVIDER = "openai-compatible";
+const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
+const TOOLS_MEMORY_FILE = resolve(CURRENT_DIR, "memory_files/Tools.md");
 
 function createCompatibleModel(modelId: string, baseURL: string): Model<"openai-completions"> {
   return {
@@ -134,6 +139,74 @@ function createMutex() {
   };
 }
 
+function schemaTypeToText(schema: any): string {
+  if (!schema || typeof schema !== "object") {
+    return "unknown";
+  }
+  if (Array.isArray(schema.type)) {
+    return schema.type.join(" | ");
+  }
+  if (typeof schema.type === "string") {
+    return schema.type;
+  }
+  if (schema.const !== undefined) {
+    return JSON.stringify(schema.const);
+  }
+  if (Array.isArray(schema.enum)) {
+    return schema.enum.map((item: unknown) => JSON.stringify(item)).join(" | ");
+  }
+  if (Array.isArray(schema.anyOf) && schema.anyOf.length > 0) {
+    return schema.anyOf.map((item: unknown) => schemaTypeToText(item)).join(" | ");
+  }
+  if (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
+    return schema.oneOf.map((item: unknown) => schemaTypeToText(item)).join(" | ");
+  }
+  if (schema.type === "array") {
+    return `${schemaTypeToText(schema.items)}[]`;
+  }
+  return "unknown";
+}
+
+function renderToolSignature(tool: AgentTool<any>): string {
+  const schema: any = tool.parameters ?? {};
+  const properties = (schema.properties ?? {}) as Record<string, any>;
+  const required = new Set<string>(Array.isArray(schema.required) ? schema.required : []);
+  const params = Object.entries(properties).map(([name, prop]) => {
+    const optionalMarker = required.has(name) ? "" : "?";
+    return `${name}${optionalMarker}: ${schemaTypeToText(prop)}`;
+  });
+  return `${tool.name}(${params.join(", ")}): string`;
+}
+
+function renderToolsMemory(tools: AgentTool<any>[]): string {
+  if (tools.length === 0) {
+    return "# Tools\n\nNo tools are currently registered.\n";
+  }
+
+  const lines: string[] = ["# Tools", ""];
+  for (const tool of tools) {
+    lines.push(`## ${tool.name}`);
+    lines.push("```ts");
+    lines.push(renderToolSignature(tool));
+    lines.push("```");
+    lines.push("");
+    lines.push(`- description: ${tool.description.trim()}`);
+    lines.push("- parameters:");
+    const schema: any = tool.parameters ?? {};
+    const properties = (schema.properties ?? {}) as Record<string, any>;
+    const required = new Set<string>(Array.isArray(schema.required) ? schema.required : []);
+    for (const [name, prop] of Object.entries(properties)) {
+      const requiredText = required.has(name) ? "required" : "optional";
+      const typeText = schemaTypeToText(prop);
+      const description = typeof prop.description === "string" ? prop.description.trim() : "";
+      const suffix = description ? ` - ${description}` : "";
+      lines.push(`  - ${name} (${typeText}, ${requiredText})${suffix}`);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
 export function createOpenAIAgent(
   options: CreateOpenAIAgentOptions = {}
 ): OpenAIAgent {
@@ -148,6 +221,12 @@ export function createOpenAIAgent(
   const toolRegistry = new Map<string, AgentTool<any>>(
     initialTools.map((tool) => [tool.name, tool])
   );
+  const syncToolsMemoryFile = () => {
+    const tools = Array.from(toolRegistry.values());
+    const content = renderToolsMemory(tools);
+    writeFileSync(TOOLS_MEMORY_FILE, content, "utf8");
+  };
+  syncToolsMemoryFile();
   let temperatureForCurrentRequest: number | undefined;
   const acquire = createMutex();
   const agent = new Agent({
@@ -243,6 +322,7 @@ export function createOpenAIAgent(
     try {
       toolRegistry.set(tool.name, tool);
       agent.setTools(Array.from(toolRegistry.values()));
+      syncToolsMemoryFile();
     } finally {
       releaseLock();
     }
@@ -254,6 +334,7 @@ export function createOpenAIAgent(
       const deleted = toolRegistry.delete(name);
       if (deleted) {
         agent.setTools(Array.from(toolRegistry.values()));
+        syncToolsMemoryFile();
       }
       return deleted;
     } finally {
@@ -269,6 +350,7 @@ export function createOpenAIAgent(
         toolRegistry.set(tool.name, tool);
       }
       agent.setTools(Array.from(toolRegistry.values()));
+      syncToolsMemoryFile();
     } finally {
       releaseLock();
     }

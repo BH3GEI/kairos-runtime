@@ -17,10 +17,10 @@ export function createWriteFileSafeTool(): AgentTool<any, WriteFileSafeDetails> 
   return {
     name: "write_file_safe",
     label: "Write safe file",
-    description: `Write UTF-8 content only under ${SAFE_TOOLS_ROOT}.`,
+    description: `Write UTF-8 content only under ${SAFE_TOOLS_ROOT}. Please use this tool to update Identity.md.`,
     parameters: Type.Object({
       path: Type.String({
-        description: "Relative file path under src/agent/tools.",
+        description: `Relative file path under ${SAFE_TOOLS_ROOT}.`,
       }),
       content: Type.String({
         description: "UTF-8 content to write.",
