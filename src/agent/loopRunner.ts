@@ -182,7 +182,8 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     const abortController = new AbortController();
     activeAgentLoops.add(loopContext);
 
-    let currentMessaageHasEmitted = false;
+    let currentTextHasEmitted = false;
+    let currentMessageHasEmitted = false;
     let globalMessageHasEmitted = false;
     try {
       const userPrompt = { role: "user", content: prompt, timestamp: Date.now() } as AgentMessage;
@@ -199,30 +200,38 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
       );
 
       promptPromise = (async () => {
+        // [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
+        // = [false, false, false];
         for await (const event of stream) {
-          currentMessaageHasEmitted = false;
           if (event.type === "message_update") {
             const assistantEvent = event.assistantMessageEvent;
             if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
-              currentMessaageHasEmitted = true;
-              globalMessageHasEmitted = true;
+              [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
+              = [true, true, true];
               queue.push(assistantEvent.delta);
               continue;
             }
             if (
               assistantEvent.type === "text_end" &&
-              !currentMessaageHasEmitted &&
+              !currentTextHasEmitted &&
               assistantEvent.content
             ) {
-              currentMessaageHasEmitted = true;
-              globalMessageHasEmitted = true;
+              [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
+              = [false, true, true];
               queue.push(assistantEvent.content);
+            }
+            if (
+              assistantEvent.type === "text_end" && 
+              currentMessageHasEmitted 
+            ) {
+              [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
+              = [false, true, true];
             }
             continue;
           }
 
           if (event.type === "message_end") {
-            if (!currentMessaageHasEmitted) {
+            if (!currentMessageHasEmitted) {
               const message = event.message as {
                 role?: string;
                 content?: Array<{ type?: string; text?: string }>;
@@ -235,10 +244,14 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
                 .map((block) => block.text as string)
                 .join("");
               if (fallbackText) {
-                currentMessaageHasEmitted = true;
-                globalMessageHasEmitted = true;
+                [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
+                = [false, false, true];
                 queue.push(fallbackText);
               }
+            }
+            else {
+              [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
+              = [false, false, true];
             }
             continue;
           }
