@@ -3,6 +3,7 @@ import { Type } from "@mariozechner/pi-ai";
 import { Value } from "@sinclair/typebox/value";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { builtinModules } from "node:module";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
@@ -11,6 +12,7 @@ interface EvoluteDetails {
 }
 
 const EVOLUTE_MODULE_DIR = resolve(process.cwd(), ".evolute-modules");
+const TOOL_CODE_DIR = resolve(process.cwd(), "agent/tools");
 const KEEP_EVOLUTE_MODULES = process.env.EVOLUTE_KEEP_MODULES === "1";
 
 const DynamicToolSchema = Type.Object(
@@ -37,13 +39,20 @@ function validateDynamicTool(candidate: unknown): AgentTool<any> {
   return tool;
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
 async function compileToolFromCode(code: string): Promise<AgentTool<any>> {
   const source = code.trim();
   if (!source) {
     throw new Error("code is required.");
   }
 
-  const moduleSource = buildModuleSource(source);
+  const moduleSource = rewriteBuiltinDefaultImports(buildModuleSource(source));
   const transpiled = ts.transpileModule(moduleSource, {
     compilerOptions: {
       module: ts.ModuleKind.ESNext,
@@ -73,10 +82,18 @@ async function compileToolFromCode(code: string): Promise<AgentTool<any>> {
     const moduleUrl = `${pathToFileURL(modulePath).href}?v=${Date.now()}`;
     const loaded = await import(moduleUrl);
     tool = loaded.default;
-    return validateDynamicTool(tool);
+    if (typeof tool === "function") {
+      console.log("[Evolute] 检测到导出为函数，正在自动执行解包...");
+      tool = await tool(); 
+    }
+    const validatedTool = validateDynamicTool(tool);
+    const codeUrl = `${TOOL_CODE_DIR}/${validatedTool.name}.ts`;
+    await writeFile(codeUrl, code, "utf8");
+    return validatedTool;
   } catch (error) {
     hasError = true;
-    throw new Error(`Failed to compile tool from code: ${error}`);
+    console.error("error", error);
+    throw new Error(`Failed to compile tool from code: ${toErrorMessage(error)}`);
   } finally {
     if (!KEEP_EVOLUTE_MODULES && !hasError) {
       await unlink(modulePath).catch(() => undefined);
@@ -84,33 +101,48 @@ async function compileToolFromCode(code: string): Promise<AgentTool<any>> {
   }
 }
 
+function rewriteBuiltinDefaultImports(source: string): string {
+  const builtinSet = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
+  const defaultImportPattern =
+    /import\s+([A-Za-z_$][\w$]*)\s+from\s+["']((?:node:)?[A-Za-z][\w./-]*)["'];?/g;
+
+  return source.replace(defaultImportPattern, (full, localName: string, specifier: string) => {
+    const normalized = specifier.replace(/^node:/, "");
+    if (!builtinSet.has(normalized)) {
+      return full;
+    }
+    return `import * as ${localName} from "node:${normalized}";`;
+  });
+}
+
 function buildModuleSource(source: string): string {
+  const trimmed = source.trim();
+
   if (/\bexport\s+default\b/.test(source)) {
     return source;
   }
 
-  const exportedFunction = source.match(/\bexport\s+function\s+([A-Za-z_$][\w$]*)\s*\(/);
+  const exportedFunction = source.match(/\bexport\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/);
   if (exportedFunction?.[1]) {
     return `${source}\n\nexport default ${exportedFunction[1]}();\n`;
   }
 
-  const exportedConst = source.match(/\bexport\s+const\s+([A-Za-z_$][\w$]*)\s*=/);
-  if (exportedConst?.[1]) {
-    return `${source}\n\nexport default ${exportedConst[1]};\n`;
+  const exportedVar = source.match(/\bexport\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?:=|:)/);
+  if (exportedVar?.[1]) {
+    return `${source}\n\nexport default ${exportedVar[1]};\n`;
   }
 
-  const looksLikeModule = /\b(import|export)\b/.test(source);
-  if (looksLikeModule) {
-    return `${source}\n\nexport default undefined;\n`;
-  }
-
-  return `
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    return `
 import { Type } from "@mariozechner/pi-ai";
 const __tool = (
 ${source}
 );
 export default __tool;
 `;
+  }
+
+  throw new Error("Invalid tool code format: LLM must provide 'export default' or a raw object expression.");
 }
 
 export function createEvoluteTool(
@@ -120,7 +152,7 @@ export function createEvoluteTool(
     name: "evolute",
     label: "Evolute tool",
     description:
-      "Register a new tool at runtime from JavaScript code (supports import/export module style).",
+      "Register a new tool at runtime from Typescript code (supports import/export module style).",
     parameters: Type.Object({
       code: Type.String({
         description:
@@ -132,6 +164,7 @@ export function createEvoluteTool(
           Here is an example:
           \`\`\`ts
           import { Type } from "@mariozechner/pi-ai";
+          import type { AgentTool } from "@mariozechner/pi-agent-core";
 
           interface EvoluteDetails {
             EvoluteToolName: string;
@@ -157,36 +190,21 @@ export function createEvoluteTool(
       }),
     }),
     execute: async (_toolCallId, params) => {
-      console.log("executing evolute tool", params.code);
-      try {
-        const dynamicTool = await compileToolFromCode(params.code);
-        await registerTool(dynamicTool);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Tool registered: ${dynamicTool.name}`,
-            },
-          ],
-          details: {
-            registeredToolName: dynamicTool.name,
+      const dynamicTool = await compileToolFromCode(params.code);
+      console.log("dynamicTool", params.code, dynamicTool);
+      await registerTool(dynamicTool);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `✅ SUCCESS: Tool '${dynamicTool.name}' has been perfectly registered and is NOW AVAILABLE in your tool list! \n\n
+            `,
           },
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.log("failed to register tool", message);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Failed to register tool: ${message}`,
-            },
-          ],
-          details: {
-            registeredToolName: "",
-          },
-        };
-      }
+        ],
+        details: {
+          registeredToolName: dynamicTool.name,
+        },
+      };
     },
   };
 }

@@ -10,7 +10,7 @@ export const system = () => {
     const soulContent = readFileSync(resolve(MEMORY_DIR, "Soul.md"), "utf8");
     const identityContent = readFileSync(resolve(MEMORY_DIR, "Identity.md"), "utf8");
     const toolsContent = readFileSync(resolve(MEMORY_DIR, "Tools.md"), "utf8");
-    
+
     return `
     You are a AI Agent, now you wake up.
 
@@ -30,5 +30,11 @@ export const system = () => {
     ${identityContent}
     # Tools.md
     ${toolsContent}
+
+    
+    
+    You should solve the problem step by step, if you can't solve the problem, please create a new tool to solve the problem.
+    You should use the tools you just created to help you solve the problem.
+    When you don't use the tools, please reply to user, don't do nothing. 
     `;
 }

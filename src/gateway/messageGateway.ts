@@ -52,12 +52,20 @@ export function createMessageGateway(
     );
 
     try {
+      let hasOutput = false;
       for await (const chunk of options.runtime.streamReply({
         triggerMessage: message,
         prompt: decision.prompt,
       })) {
         console.log("append stream", chunk);
         options.telegram.appendStream(streamMessageId, chunk);
+        hasOutput = true;
+      }
+      if (!hasOutput) {
+        options.telegram.appendStream(
+          streamMessageId,
+          "\n(模型本轮未返回可显示文本，请重试或调整提示词)"
+        );
       }
       await options.telegram.endStream(streamMessageId);
     } catch (error) {
