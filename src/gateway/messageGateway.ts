@@ -45,7 +45,7 @@ export function createMessageGateway(
     if (!decision.shouldTrigger || !decision.prompt) {
       return;
     }
-
+    console.log("streamMessage", message);
     const streamMessageId = await options.telegram.startStream(
       message.chatId,
       message.messageId

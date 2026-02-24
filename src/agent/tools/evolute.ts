@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 
 interface EvoluteDetails {
   registeredToolName: string;
+  stagedToolCallId: string;
 }
 
 const EVOLUTE_MODULE_DIR = resolve(process.cwd(), ".evolute-modules");
@@ -18,6 +19,7 @@ const KEEP_EVOLUTE_MODULES = process.env.EVOLUTE_KEEP_MODULES === "1";
 const EVOLUTE_MANAGED_DEPS_FILE = join(EVOLUTE_MODULE_DIR, "package.json");
 const BUILTIN_PLAIN_NAMES = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
 const ESM_LEXER_READY = initEsmLexer;
+const pendingEvolutedTools = new Map<string, AgentTool<any>>();
 
 const IGNORED_PACKAGE_NAMES = new Set<string>([
   "bun",
@@ -310,9 +312,15 @@ async function writeDependencySnapshot(
   await writeFile(outputPath, `${payload}\n`, "utf8");
 }
 
-export function createEvoluteTool(
-  registerTool: (tool: AgentTool<any>) => Promise<void>
-): AgentTool<any, EvoluteDetails> {
+export function consumePendingEvolutedTool(toolCallId: string): AgentTool<any> | undefined {
+  const tool = pendingEvolutedTools.get(toolCallId);
+  if (tool) {
+    pendingEvolutedTools.delete(toolCallId);
+  }
+  return tool;
+}
+
+export function createEvoluteTool(): AgentTool<any, EvoluteDetails> {
   return {
     name: "evolute",
     label: "Evolute tool",
@@ -368,21 +376,22 @@ export function createEvoluteTool(
           `,
       }),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (toolCallId, params) => {
       const dynamicTool = await compileToolFromCode(params.code);
       console.log("dynamicTool", dynamicTool);
-      await registerTool(dynamicTool);
+      pendingEvolutedTools.set(toolCallId, dynamicTool);
       return {
         content: [
           {
             type: "text",
             text: `✅ SUCCESS: Tool '${dynamicTool.name}' has been perfectly registered and is NOW AVAILABLE in your tool list! \n\n
             `,
-          },
+          }
         ],
         details: {
           registeredToolName: dynamicTool.name,
-        },
+          stagedToolCallId: toolCallId,
+        }
       };
     },
   };

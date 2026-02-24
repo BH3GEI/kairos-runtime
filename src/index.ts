@@ -18,18 +18,24 @@ import { createTelegramAdapter } from "./telegram/adapter";
 import { fetch } from "bun";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+const API_KEY = process.env.API_KEY ?? process.env.QWEN_API_KEY;
 // const API_KEY = process.env.API_KEY ?? process.env.KIMI_API_KEY;
-const API_KEY = process.env.API_KEY ?? process.env.ARK_API_KEY;
+// const API_KEY = process.env.API_KEY ?? process.env.ARK_API_KEY;
 // const API_KEY = process.env.API_KEY ?? process.env.OPENAI_API_KEY;
-const baseURL = process.env.BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3/";
+// const baseURL = process.env.BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3/";
 // const baseURL = process.env.BASE_URL ?? "https://api.kimi.com/coding/v1"
 // const baseURL = process.env.BASE_URL ?? "https://api.openai.com/v1";
+const baseURL = process.env.BASE_URL ?? "https://coding.dashscope.aliyuncs.com/v1"
 // const model = process.env.MODEL ?? "doubao-seed-1-8-251228";
 // const model = process.env.MODEL ?? "doubao-seed-2-0-pro-260215";
-const model = process.env.MODEL ?? "doubao-seed-2-0-code-preview-260215";
+// const model = process.env.MODEL ?? "kimi-for-coding"
+const model = process.env.MODEL ?? "qwen3-coder-next"
+// const model = process.env.MODEL ?? "doubao-seed-2-0-code-preview-260215";
 // const model = process.env.MODEL ?? "kimi-k2.5";
 // const model = process.env.MODEL ?? "gpt-5-mini-2025-08-07"
-
+// const model = process.env.MODEL ?? "gpt-5.2-2025-12-11";
+// const model = process.env.MODEL ?? "gpt-5.2-codex"
+// const model = process.env.MODEL ?? "gpt-5-pro-2025-10-06"
 
 if (!BOT_TOKEN) {
   throw new Error("BOT_TOKEN is required to start telegram bot.");
@@ -37,41 +43,6 @@ if (!BOT_TOKEN) {
 if (!API_KEY) {
   throw new Error("API_KEY (or DEEPSEEK_API_KEY) is required to start AI orchestrator.");
 }
-
-// const originalFetch = global.fetch;
-
-// global.fetch = async (...args) => {
-//   const [url, config] = args;
-  
-//   // 只拦截发往大模型的请求
-//   const isLLMRequest = typeof url === 'string' && (url.includes('chat/completions') || url.includes('v1'));
-  
-//   try {
-//     const response = await originalFetch(...args);
-    
-//     if (isLLMRequest) {
-//       // 必须 clone 一下 response，否则读完 body 原本的代码就读不到了
-//       const clonedResponse = response.clone();
-      
-//       console.log(`\n[🕵️ Network] 收到来自 ${url} 的响应，状态码: ${clonedResponse.status}`);
-      
-//       // 如果状态码不是 200，说明 API 报错了，直接打印出罪魁祸首！
-//       if (!clonedResponse.ok) {
-//         const errorText = await clonedResponse.text();
-//         console.error(`[🚨 API 报错拦截] ${errorText}`);
-//       } else {
-//         // 如果是 200，说明确实通了。可以尝试打印流的前几个字节看看格式对不对
-//         // （注意：读取流比较复杂，这里仅作提示，通常看 status 就能排查掉 80% 的问题）
-//         console.log(`[✅ API 状态正常] 准备开始解析流...`);
-//       }
-//     }
-    
-//     return response;
-//   } catch (err) {
-//     if (isLLMRequest) console.error(`[🚨 Fetch 彻底失败] 网络断开或跨域拦截:`, err);
-//     throw err;
-//   }
-// };
 
 // 保存原始的 fetch
 const originalFetch = global.fetch;
@@ -88,7 +59,7 @@ global.fetch = async (...args) => {
       // 大模型的 payload 通常都带 messages 字段
       if (payload.messages) {
         console.log(`\n\n[🕵️ Network Intercept] 发送请求到: ${url}`);
-        
+        console.log("payload:", payload);
         // 重点关注！打印出当前发送出去的所有工具名称
         if (payload.tools) {
           const toolNames = payload.tools.map((t: any) => 

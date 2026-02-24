@@ -258,5 +258,16 @@ function isRetryableNetworkError(error: unknown): boolean {
 }
 
 function escapeText(text: string): string {
-  return text.replace(/[\\_*\[\]()~>+\=|{}.!]/g, "\\$&");
+  const placeholders: string[] = [];
+  const protectedText = text.replace(/\[[^\]\n]+\]\([^\)\n]+\)/g, (match) => {
+    const token = `\u0000LINK${placeholders.length}\u0000`;
+    placeholders.push(match);
+    return token;
+  });
+
+  const escaped = protectedText.replace(/[\\_*\[\]()~>#+\-=|{}.!]/g, "\\$&");
+  return escaped.replace(/\u0000LINK(\d+)\u0000/g, (_, indexText: string) => {
+    const index = Number(indexText);
+    return placeholders[index] ?? "";
+  });
 }

@@ -5,6 +5,7 @@ import {
   type AgentTool,
 } from "@mariozechner/pi-agent-core";
 import type { Message, Model } from "@mariozechner/pi-ai";
+import { consumePendingEvolutedTool } from "./tools/evolute";
 
 export interface AgentLoopMessage {
   role: "system" | "user" | "assistant";
@@ -29,6 +30,7 @@ export interface CreateAgentLoopRunnerOptions {
   baseURL: string;
   defaultModel: string;
   getCurrentTools: () => AgentTool<any>[];
+  registerDynamicTool: (tool: AgentTool<any>) => Promise<void>;
 }
 
 const DEFAULT_PROVIDER = "openai";
@@ -49,7 +51,7 @@ function createCompatibleModel(modelId: string, baseURL: string): Model<"openai-
       cacheWrite: 0,
     },
     contextWindow: 128000,
-    maxTokens: 128000,
+    maxTokens: 4096,
   };
 }
 
@@ -119,22 +121,26 @@ function createTextStreamQueue() {
 }
 
 function extractAssistantTextFromMessages(messages: AgentMessage[]): string {
-  const lastAssistant = [...messages].reverse().find((item) => (item as any)?.role === "assistant") as
-    | { content?: unknown }
-    | undefined;
-  if (!lastAssistant) {
-    return "";
+  for (const message of [...messages].reverse()) {
+    if ((message as any)?.role !== "assistant") {
+      continue;
+    }
+    const content = (message as { content?: unknown }).content;
+    if (typeof content === "string" && content) {
+      return content;
+    }
+    if (!Array.isArray(content)) {
+      continue;
+    }
+    const text = (content as Array<{ type?: string; text?: string }>)
+      .filter((block) => block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text as string)
+      .join("");
+    if (text) {
+      return text;
+    }
   }
-  if (typeof lastAssistant.content === "string") {
-    return lastAssistant.content;
-  }
-  if (!Array.isArray(lastAssistant.content)) {
-    return "";
-  }
-  return (lastAssistant.content as Array<{ type?: string; text?: string }>)
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string)
-    .join("");
+  return "";
 }
 
 function syncToolsInPlace(context: AgentContext, tools: AgentTool<any>[]) {
@@ -201,6 +207,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
 
       promptPromise = (async () => {
         for await (const event of stream) {
+          // console.log("[Raw Event] type:", event.type, " keys:", Object.keys(event));
           if (event.type === "message_update") {
             const assistantEvent = event.assistantMessageEvent;
             if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
@@ -231,6 +238,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
               role?: string;
               content?: Array<{ type?: string; text?: string }>;
             };
+            console.log(message.role, message.content);
             if (message.role !== "assistant") {
               currentMessageHasToolCall = false;
               currentMessageTextBuffer = "";
@@ -254,9 +262,21 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
             continue;
           }
 
-          if (event.type === "tool_execution_end" && event.toolName === "evolute") {
-            const latestTools = options.getCurrentTools();
-            syncToolsInPlace(loopContext, latestTools);
+          if (event.type === "tool_execution_end") {
+            if(event.toolName === "evolute") {
+              const pendingTool = consumePendingEvolutedTool(event.toolCallId);
+              if (pendingTool) {
+                await options.registerDynamicTool(pendingTool);
+              }
+              // options.toolsRegistry.registerDynamicTool(event.result.details);
+              const latestTools = options.getCurrentTools();
+              syncToolsInPlace(loopContext, latestTools);
+            }
+            else {
+              console.log("[Event: tool_execution_end] Tool:", event.toolName, 
+                "Result:", event.result,
+                "ToolCallId:", event.toolCallId);
+            }
           }
 
           if(event.type === "tool_execution_start") {
@@ -269,6 +289,9 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         if (!globalMessageHasEmitted) {
           const newMessages = await stream.result();
           const fallbackText = extractAssistantTextFromMessages(newMessages);
+          console.log(
+            `[loopRunner] fallback extraction: found=${Boolean(fallbackText)} length=${fallbackText.length}`
+          );
           if (fallbackText) {
             globalMessageHasEmitted = true;
             queue.push(fallbackText);

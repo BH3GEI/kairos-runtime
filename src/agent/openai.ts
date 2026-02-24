@@ -59,17 +59,19 @@ export function createOpenAIAgent(
     loopRunner.applyToolsToActiveLoops();
     toolsDocWriter.sync(toolsRegistry.getCurrentTools());
   };
-  const evoluteTool = createEvoluteTool(registerDynamicTool);
+  const evoluteTool = createEvoluteTool();
   toolsRegistry.registerStaticTool(evoluteTool);
   const loopRunner = createAgentLoopRunner({
     apiKey,
     baseURL,
     defaultModel,
     getCurrentTools: () => toolsRegistry.getCurrentTools(),
+    registerDynamicTool,
   });
   toolsDocWriter.sync(toolsRegistry.getCurrentTools());
   void (async () => {
     const loaded = await loadDynamicToolsFromDirectory(EVOLUTIONS_DIR);
+    // const loaded = {tools: [], errors: []}; 
     for (const tool of loaded.tools) {
       toolsRegistry.registerDynamicTool(tool);
     }

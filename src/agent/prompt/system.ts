@@ -55,5 +55,6 @@ export const system = () => {
     You should use the tools you just created to help you solve the problem.
     When you don't use the tools, please reply to user, don't do nothing. 
 
+    Caution: It's ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' })} now.
     `;
 }
