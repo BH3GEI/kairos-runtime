@@ -67,13 +67,17 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
     }
 
     const finalText = state.chunks.join("") || DEFAULT_FINAL_TEXT;
+    const escapedFinalText = escapeText(finalText);
     try {
       await retry(
         () =>
           bot.api.editMessageText(
             state.chatId,
             state.placeholderMessageId,
-            finalText
+            escapedFinalText,
+            {
+              parse_mode: "MarkdownV2"
+            }
           ),
         EDIT_RETRY_ATTEMPTS,
         EDIT_RETRY_DELAY_MS
@@ -251,4 +255,8 @@ function isRetryableNetworkError(error: unknown): boolean {
     lowerMessage.includes("fetch failed") ||
     lowerMessage.includes("network error")
   );
+}
+
+function escapeText(text: string): string {
+  return text.replace(/[\\_*\[\]()~>+\=|{}.!]/g, "\\$&");
 }

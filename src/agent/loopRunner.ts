@@ -182,8 +182,8 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     const abortController = new AbortController();
     activeAgentLoops.add(loopContext);
 
-    let currentTextHasEmitted = false;
-    let currentMessageHasEmitted = false;
+    let currentMessageHasToolCall = false;
+    let currentMessageTextBuffer = "";
     let globalMessageHasEmitted = false;
     try {
       const userPrompt = { role: "user", content: prompt, timestamp: Date.now() } as AgentMessage;
@@ -200,59 +200,57 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
       );
 
       promptPromise = (async () => {
-        // [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
-        // = [false, false, false];
         for await (const event of stream) {
           if (event.type === "message_update") {
             const assistantEvent = event.assistantMessageEvent;
             if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
-              [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
-              = [true, true, true];
-              queue.push(assistantEvent.delta);
+              currentMessageTextBuffer += assistantEvent.delta;
               continue;
             }
             if (
               assistantEvent.type === "text_end" &&
-              !currentTextHasEmitted &&
               assistantEvent.content
             ) {
-              [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
-              = [false, true, true];
-              queue.push(assistantEvent.content);
+              if (!currentMessageTextBuffer) {
+                currentMessageTextBuffer = assistantEvent.content;
+              }
+              continue;
             }
             if (
-              assistantEvent.type === "text_end" && 
-              currentMessageHasEmitted 
+              assistantEvent.type === "toolcall_start" ||
+              assistantEvent.type === "toolcall_delta" ||
+              assistantEvent.type === "toolcall_end"
             ) {
-              [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
-              = [false, true, true];
+              currentMessageHasToolCall = true;
             }
             continue;
           }
 
           if (event.type === "message_end") {
-            if (!currentMessageHasEmitted) {
-              const message = event.message as {
-                role?: string;
-                content?: Array<{ type?: string; text?: string }>;
-              };
-              if (message.role !== "assistant" || !Array.isArray(message.content)) {
-                continue;
+            const message = event.message as {
+              role?: string;
+              content?: Array<{ type?: string; text?: string }>;
+            };
+            if (message.role !== "assistant") {
+              currentMessageHasToolCall = false;
+              currentMessageTextBuffer = "";
+              continue;
+            }
+            if (!currentMessageHasToolCall) {
+              let output = currentMessageTextBuffer;
+              if (!output && Array.isArray(message.content)) {
+                output = message.content
+                  .filter((block) => block.type === "text" && typeof block.text === "string")
+                  .map((block) => block.text as string)
+                  .join("");
               }
-              const fallbackText = message.content
-                .filter((block) => block.type === "text" && typeof block.text === "string")
-                .map((block) => block.text as string)
-                .join("");
-              if (fallbackText) {
-                [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
-                = [false, false, true];
-                queue.push(fallbackText);
+              if (output) {
+                globalMessageHasEmitted = true;
+                queue.push(output);
               }
             }
-            else {
-              [currentTextHasEmitted, currentMessageHasEmitted, globalMessageHasEmitted] 
-              = [false, false, true];
-            }
+            currentMessageHasToolCall = false;
+            currentMessageTextBuffer = "";
             continue;
           }
 
