@@ -2,6 +2,8 @@ import type { LLMMessage, OpenAIAgent } from "./openai";
 import type { TelegramMessage } from "../telegram/types";
 import { system } from "./prompt";
 import { RemoteAsyncIterable } from "./remoteAsyncIterable";
+import type { AgentEnclaveClient } from "./enclaveProtocol";
+import { createLocalEnclaveClient } from "./enclaveClient";
 
 export interface AgentRuntime {
   observe: (message: TelegramMessage) => void;
@@ -12,13 +14,20 @@ export interface AgentRuntime {
 }
 
 export interface CreateInMemoryAgentRuntimeOptions {
-  agent: OpenAIAgent;
+  agent?: OpenAIAgent;
+  enclaveClient?: AgentEnclaveClient;
   maxHistoryPerChat?: number;
 }
 
 export function createInMemoryAgentRuntime(
   options: CreateInMemoryAgentRuntimeOptions
 ): AgentRuntime {
+  const enclaveClient =
+    options.enclaveClient ?? (options.agent ? createLocalEnclaveClient(options.agent) : null);
+  if (!enclaveClient) {
+    throw new Error("createInMemoryAgentRuntime requires either agent or enclaveClient.");
+  }
+
   const maxHistoryPerChat = options.maxHistoryPerChat ?? 50;
   const historyByChat = new Map<number, TelegramMessage[]>();
 
@@ -42,8 +51,24 @@ export function createInMemoryAgentRuntime(
     const llmMessages = buildLLMMessages(history, triggerMessage.messageId, prompt, systemPrompt);
     void (async () => {
       try {
-        for await (const chunk of options.agent.streamText(llmMessages)) {
-          stream.push(chunk);
+        for await (const event of enclaveClient.streamReply({
+          chatId: triggerMessage.chatId,
+          messages: llmMessages,
+        })) {
+          if (
+            event.type === "message_update" &&
+            event.role === "assistant" &&
+            event.delta
+          ) {
+            stream.push(event.delta);
+            continue;
+          }
+          if (event.type === "failed") {
+            throw new Error(event.error);
+          }
+          if (event.type === "completed") {
+            break;
+          }
         }
         stream.end();
       } catch (error) {

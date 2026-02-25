@@ -2,7 +2,11 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadDynamicToolsFromDirectory } from "./dynamicToolsLoader";
-import { createAgentLoopRunner } from "./loopRunner";
+import {
+  createAgentLoopRunner,
+  type AgentLoopRunner,
+  type AgentLoopStreamEvent,
+} from "./loopRunner";
 import { createApoptosisTool } from "./tools/apoptosis";
 import { createEvoluteTool } from "./tools/evolute";
 import { createToolsRegistry } from "./toolsRegistry";
@@ -37,6 +41,15 @@ export interface OpenAIAgent {
   listTools: () => string[];
 }
 
+export interface OpenAIEnclaveRuntime {
+  streamEvents: (
+    messages: LLMMessage[],
+    options?: GenerateTextOptions
+  ) => AsyncGenerator<AgentLoopStreamEvent, void, unknown>;
+  listTools: () => string[];
+  replaceTools: (tools: AgentTool<any>[]) => Promise<void>;
+}
+
 const DEFAULT_MODEL = "gpt-4o-mini";
 const DEFAULT_BASE_URL = "https://api.deepseek.com/v1";
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +58,71 @@ const EVOLUTIONS_DIR = resolve(CURRENT_DIR, "tools/evolutions");
 export function createOpenAIAgent(
   options: CreateOpenAIAgentOptions = {}
 ): OpenAIAgent {
+  const core = createAgentCore(options);
+
+  const generateText: OpenAIAgent["generateText"] = async (
+    messages,
+    generateOptions = {}
+  ) => {
+    let output = "";
+    for await (const chunk of streamText(messages, generateOptions)) {
+      output += chunk;
+    }
+    return output;
+  };
+
+  const streamText: OpenAIAgent["streamText"] = async function* (
+    messages,
+    generateOptions = {}
+  ) {
+    yield* core.loopRunner.streamText(messages, generateOptions);
+  };
+
+  const registerTool: OpenAIAgent["registerTool"] = async (tool) => {
+    await core.registerDynamicTool(tool);
+  };
+
+  const unregisterToolApi: OpenAIAgent["unregisterTool"] = async (name) => core.unregisterTool(name);
+
+  const replaceTools: OpenAIAgent["replaceTools"] = async (tools) => {
+    await core.replaceTools(tools);
+  };
+
+  const listTools: OpenAIAgent["listTools"] = () =>
+    core.toolsRegistry.getCurrentTools().map((tool) => tool.name);
+
+  return {
+    generateText,
+    streamText,
+    registerTool,
+    unregisterTool: unregisterToolApi,
+    replaceTools,
+    listTools,
+  };
+}
+
+export function createOpenAIEnclaveRuntime(
+  options: CreateOpenAIAgentOptions = {}
+): OpenAIEnclaveRuntime {
+  const core = createAgentCore(options);
+  return {
+    streamEvents: async function* (messages, generateOptions = {}) {
+      yield* core.loopRunner.streamEvents(messages, generateOptions);
+    },
+    listTools: () => core.toolsRegistry.getCurrentTools().map((tool) => tool.name),
+    replaceTools: core.replaceTools,
+  };
+}
+
+interface AgentCore {
+  loopRunner: AgentLoopRunner;
+  toolsRegistry: ReturnType<typeof createToolsRegistry>;
+  registerDynamicTool: (tool: AgentTool<any>) => Promise<void>;
+  unregisterTool: (name: string) => Promise<boolean>;
+  replaceTools: (tools: AgentTool<any>[]) => Promise<void>;
+}
+
+function createAgentCore(options: CreateOpenAIAgentOptions): AgentCore {
   const apiKey = options.apiKey ?? process.env.API_KEY;
   if (!apiKey) {
     throw new Error("API_KEY is required for OpenAI agent.");
@@ -55,6 +133,7 @@ export function createOpenAIAgent(
   const initialTools = options.tools ?? [];
   const toolsRegistry = createToolsRegistry(initialTools);
   const toolsDocWriter = createToolsDocWriter();
+  let loopRunner: AgentLoopRunner;
   const registerDynamicTool = async (tool: AgentTool<any>) => {
     toolsRegistry.registerDynamicTool(tool);
     loopRunner.applyToolsToActiveLoops();
@@ -72,7 +151,7 @@ export function createOpenAIAgent(
     }
     return deleted;
   };
-  const loopRunner = createAgentLoopRunner({
+  loopRunner = createAgentLoopRunner({
     apiKey,
     baseURL,
     defaultModel,
@@ -99,45 +178,16 @@ export function createOpenAIAgent(
     }
   })();
 
-  const generateText: OpenAIAgent["generateText"] = async (
-    messages,
-    generateOptions = {}
-  ) => {
-    let output = "";
-    for await (const chunk of streamText(messages, generateOptions)) {
-      output += chunk;
-    }
-    return output;
-  };
-
-  const streamText: OpenAIAgent["streamText"] = async function* (
-    messages,
-    generateOptions = {}
-  ) {
-    yield* loopRunner.streamText(messages, generateOptions);
-  };
-
-  const registerTool: OpenAIAgent["registerTool"] = async (tool) => {
-    await registerDynamicTool(tool);
-  };
-
-  const unregisterToolApi: OpenAIAgent["unregisterTool"] = async (name) => unregisterTool(name);
-
-  const replaceTools: OpenAIAgent["replaceTools"] = async (tools) => {
+  const replaceTools = async (tools: AgentTool<any>[]) => {
     toolsRegistry.replaceStaticTools([...tools, evoluteTool, apoptosisTool]);
     loopRunner.applyToolsToActiveLoops();
     toolsDocWriter.sync(toolsRegistry.getCurrentTools());
   };
-
-  const listTools: OpenAIAgent["listTools"] = () =>
-    toolsRegistry.getCurrentTools().map((tool) => tool.name);
-
   return {
-    generateText,
-    streamText,
-    registerTool,
-    unregisterTool: unregisterToolApi,
+    loopRunner,
+    toolsRegistry,
+    registerDynamicTool,
+    unregisterTool,
     replaceTools,
-    listTools,
   };
 }

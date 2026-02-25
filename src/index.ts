@@ -1,7 +1,9 @@
 import {
+  createGrpcEnclaveClient,
   createEvoluteTool,
   createFetchWebpageTool,
   createInMemoryAgentRuntime,
+  createLocalEnclaveClient,
   createListFilesSafeTool,
   createOpenAIAgent,
   createReadFileSafeTool,
@@ -19,6 +21,7 @@ import { fetch } from "bun";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const API_KEY = process.env.API_KEY ?? process.env.QWEN_API_KEY;
+const AGENT_ENCLAVE_TARGET = process.env.AGENT_ENCLAVE_TARGET;
 // const API_KEY = process.env.API_KEY ?? process.env.KIMI_API_KEY;
 // const API_KEY = process.env.API_KEY ?? process.env.ARK_API_KEY;
 // const API_KEY = process.env.API_KEY ?? process.env.OPENAI_API_KEY;
@@ -40,46 +43,9 @@ const model = process.env.MODEL ?? "qwen3-coder-next"
 if (!BOT_TOKEN) {
   throw new Error("BOT_TOKEN is required to start telegram bot.");
 }
-if (!API_KEY) {
+if (!AGENT_ENCLAVE_TARGET && !API_KEY) {
   throw new Error("API_KEY (or DEEPSEEK_API_KEY) is required to start AI orchestrator.");
 }
-
-// 保存原始的 fetch
-const originalFetch = global.fetch;
-
-// 覆盖全局 fetch，做个中间人抓包
-global.fetch = async (...args) => {
-  const [url, config] = args;
-  
-  // 试着解析请求的 body，看看是不是发给 LLM 的 Payload
-  if (config && typeof config.body === 'string') {
-    try {
-      const payload = JSON.parse(config.body);
-      
-      // 大模型的 payload 通常都带 messages 字段
-      if (payload.messages) {
-        console.log(`\n\n[🕵️ Network Intercept] 发送请求到: ${url}`);
-        console.log("payload:", payload);
-        // 重点关注！打印出当前发送出去的所有工具名称
-        if (payload.tools) {
-          const toolNames = payload.tools.map((t: any) => 
-            t.function?.name || t.name || 'unknown'
-          );
-          console.log(`[🕵️ Network Intercept] 携带的 Tool Schema 列表:`, toolNames);
-        } else {
-          console.log(`[🕵️ Network Intercept] ⚠️ 本次请求没有携带任何工具！`);
-        }
-      }
-    } catch (e) {
-      // 解析失败就不管了，说明不是 JSON payload
-    }
-  }
-
-  // 放行原请求
-  return originalFetch(...args);
-};
-
-
 
 // let agentRef: OpenAIAgent | null = null;
 
@@ -119,15 +85,25 @@ const buildEnabledTools = () =>
     .filter((tool): tool is NonNullable<typeof tool> => Boolean(tool));
 
 const telegram = createTelegramAdapter(BOT_TOKEN);
-const agent = createOpenAIAgent({
-  model,
-  baseURL,
-  apiKey: API_KEY,
-  tools: buildEnabledTools(),
-});
-// agentRef = agent;
+const agent = AGENT_ENCLAVE_TARGET
+  ? null
+  : createOpenAIAgent({
+      model,
+      baseURL,
+      apiKey: API_KEY,
+      tools: buildEnabledTools(),
+    });
+const enclaveClient = AGENT_ENCLAVE_TARGET
+  ? createGrpcEnclaveClient({
+      target: AGENT_ENCLAVE_TARGET,
+    })
+  : createLocalEnclaveClient(agent as OpenAIAgent);
 
 const refreshTools = async () => {
+  if (!agent) {
+    console.warn("refreshTools skipped: gRPC enclave mode is enabled.");
+    return;
+  }
   enabledToolNames = parseEnabledToolNames();
   await agent.replaceTools(buildEnabledTools());
   console.log(`Tools refreshed: ${agent.listTools().join(", ")}`);
@@ -139,7 +115,9 @@ process.on("SIGHUP", () => {
   });
 });
 
-const runtime = createInMemoryAgentRuntime({ agent });
+const runtime = createInMemoryAgentRuntime({
+  enclaveClient,
+});
 const gateway = createMessageGateway({
   telegram,
   runtime,

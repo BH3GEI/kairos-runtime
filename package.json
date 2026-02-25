@@ -3,9 +3,13 @@
   "version": "1.0.50",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "bun run --watch src/index.ts"
+    "dev": "concurrently \"bun run dev:state\" \"bun run dev:enclave\"",
+    "dev:state": "AGENT_ENCLAVE_TARGET=127.0.0.1:50051 bun run --watch src/index.ts",
+    "dev:enclave": "bun run --watch src/agent/enclaveServer.ts"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.0",
     "@mariozechner/pi-agent-core": "^0.54.0",
     "@mariozechner/pi-ai": "^0.54.0",
     "asciichart": "^1.5.25",
@@ -18,7 +22,8 @@
     "typescript": "^5.9.3"
   },
   "devDependencies": {
-    "bun-types": "latest"
+    "bun-types": "latest",
+    "concurrently": "^9.2.1"
   },
   "module": "src/index.js"
 }

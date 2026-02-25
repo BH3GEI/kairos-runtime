@@ -18,12 +18,41 @@ export interface AgentLoopGenerateOptions {
 }
 
 export interface AgentLoopRunner {
+  streamEvents: (
+    messages: AgentLoopMessage[],
+    options?: AgentLoopGenerateOptions
+  ) => AsyncGenerator<AgentLoopStreamEvent, void, unknown>;
   streamText: (
     messages: AgentLoopMessage[],
     options?: AgentLoopGenerateOptions
   ) => AsyncGenerator<string, void, unknown>;
   applyToolsToActiveLoops: () => void;
 }
+
+export type AgentLoopStreamEvent =
+  | {
+      type: "message_update";
+      role: "assistant";
+      delta: string;
+    }
+  | {
+      type: "tool_execution_start";
+      toolName: string;
+      toolCallId?: string;
+    }
+  | {
+      type: "tool_execution_end";
+      toolName: string;
+      toolCallId?: string;
+      result?: unknown;
+    }
+  | {
+      type: "completed";
+    }
+  | {
+      type: "failed";
+      error: string;
+    };
 
 export interface CreateAgentLoopRunnerOptions {
   apiKey: string;
@@ -182,7 +211,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     }
   };
 
-  const streamText: AgentLoopRunner["streamText"] = async function* (
+  const streamEvents: AgentLoopRunner["streamEvents"] = async function* (
     messages,
     generateOptions = {}
   ) {
@@ -190,12 +219,10 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     const prompt = extractLatestUserPrompt(messages);
     const systemPrompt = extractSystemPrompt(messages);
     if (!prompt.trim()) {
+      yield { type: "completed" };
       return;
     }
 
-    const queue = createTextStreamQueue();
-    let promptFinished = false;
-    let promptPromise: Promise<void> | null = null;
     const loopContext: AgentContext = {
       systemPrompt,
       messages: [],
@@ -221,129 +248,141 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         abortController.signal
       );
 
-      promptPromise = (async () => {
-        for await (const event of stream) {
-          // console.log("[Raw Event] type:", event.type, " keys:", Object.keys(event));
-          if (event.type === "message_update") {
-            const assistantEvent = event.assistantMessageEvent;
-            if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
-              currentMessageTextBuffer += assistantEvent.delta;
-              continue;
-            }
-            if (
-              assistantEvent.type === "text_end" &&
-              assistantEvent.content
-            ) {
-              if (!currentMessageTextBuffer) {
-                currentMessageTextBuffer = assistantEvent.content;
-              }
-              continue;
-            }
-            if (
-              assistantEvent.type === "toolcall_start" ||
-              assistantEvent.type === "toolcall_delta" ||
-              assistantEvent.type === "toolcall_end"
-            ) {
-              currentMessageHasToolCall = true;
+      for await (const event of stream) {
+        if (event.type === "message_update") {
+          const assistantEvent = event.assistantMessageEvent;
+          if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
+            currentMessageTextBuffer += assistantEvent.delta;
+            continue;
+          }
+          if (assistantEvent.type === "text_end" && assistantEvent.content) {
+            if (!currentMessageTextBuffer) {
+              currentMessageTextBuffer = assistantEvent.content;
             }
             continue;
           }
+          if (
+            assistantEvent.type === "toolcall_start" ||
+            assistantEvent.type === "toolcall_delta" ||
+            assistantEvent.type === "toolcall_end"
+          ) {
+            currentMessageHasToolCall = true;
+          }
+          continue;
+        }
 
-          if (event.type === "message_end") {
-            const message = event.message as {
-              role?: string;
-              content?: Array<{ type?: string; text?: string }>;
-            };
-            console.log(message.role, message.content);
-            if (message.role !== "assistant") {
-              currentMessageHasToolCall = false;
-              currentMessageTextBuffer = "";
-              continue;
-            }
-            if (!currentMessageHasToolCall) {
-              let output = currentMessageTextBuffer;
-              if (!output && Array.isArray(message.content)) {
-                output = message.content
-                  .filter((block) => block.type === "text" && typeof block.text === "string")
-                  .map((block) => block.text as string)
-                  .join("");
-              }
-              if (output) {
-                globalMessageHasEmitted = true;
-                queue.push(output);
-              }
-            }
+        if (event.type === "message_end") {
+          const message = event.message as {
+            role?: string;
+            content?: Array<{ type?: string; text?: string }>;
+          };
+          if (message.role !== "assistant") {
             currentMessageHasToolCall = false;
             currentMessageTextBuffer = "";
             continue;
           }
+          if (!currentMessageHasToolCall) {
+            let output = currentMessageTextBuffer;
+            if (!output && Array.isArray(message.content)) {
+              output = message.content
+                .filter((block) => block.type === "text" && typeof block.text === "string")
+                .map((block) => block.text as string)
+                .join("");
+            }
+            if (output) {
+              globalMessageHasEmitted = true;
+              yield {
+                type: "message_update",
+                role: "assistant",
+                delta: output,
+              };
+            }
+          }
+          currentMessageHasToolCall = false;
+          currentMessageTextBuffer = "";
+          continue;
+        }
 
-          if (event.type === "tool_execution_end") {
-            if(event.toolName === "evolute") {
-              const pendingTool = consumePendingEvolutedTool(event.toolCallId);
-              if (pendingTool) {
-                await options.registerDynamicTool(pendingTool);
-              }
-              // options.toolsRegistry.registerDynamicTool(event.result.details);
+        if (event.type === "tool_execution_end") {
+          if (event.toolName === "evolute") {
+            const pendingTool = consumePendingEvolutedTool(event.toolCallId);
+            if (pendingTool) {
+              await options.registerDynamicTool(pendingTool);
+            }
+            const latestTools = options.getCurrentTools();
+            syncToolsInPlace(loopContext, latestTools);
+          } else if (event.toolName === "apoptosis") {
+            const targetToolName = extractApoptosisTargetToolName(event.result);
+            if (targetToolName) {
+              await options.unregisterTool(targetToolName);
               const latestTools = options.getCurrentTools();
               syncToolsInPlace(loopContext, latestTools);
             }
-            else if (event.toolName === "apoptosis") {
-              const targetToolName = extractApoptosisTargetToolName(event.result);
-              if (targetToolName) {
-                await options.unregisterTool(targetToolName);
-                const latestTools = options.getCurrentTools();
-                syncToolsInPlace(loopContext, latestTools);
-              }
-            }
-            else {
-              console.log("[Event: tool_execution_end] Tool:", event.toolName, 
-                "Result:", event.result,
-                "ToolCallId:", event.toolCallId);
-            }
           }
-
-          if(event.type === "tool_execution_start") {
-            console.log("[Event: tool_execution_start] Tool:", event.toolName, 
-              "Params:", event.args,
-              "ToolCallId:", event.toolCallId);
-          }
+          yield {
+            type: "tool_execution_end",
+            toolName: event.toolName,
+            toolCallId: event.toolCallId,
+            result: event.result,
+          };
+          continue;
         }
 
-        if (!globalMessageHasEmitted) {
-          const newMessages = await stream.result();
-          const fallbackText = extractAssistantTextFromMessages(newMessages);
-          console.log(
-            `[loopRunner] fallback extraction: found=${Boolean(fallbackText)} length=${fallbackText.length}`
-          );
-          if (fallbackText) {
-            globalMessageHasEmitted = true;
-            queue.push(fallbackText);
-          }
+        if (event.type === "tool_execution_start") {
+          console.log("tool_execution_start", event);
+          yield {
+            type: "tool_execution_start",
+            toolName: event.toolName,
+            toolCallId: event.toolCallId,
+          };
+          continue;
         }
-
-        promptFinished = true;
-        queue.finish();
-      })().catch((error) => {
-        promptFinished = true;
-        queue.fail(error);
-      });
-
-      for await (const chunk of queue.consume()) {
-        yield chunk;
       }
-      await promptPromise;
+
+      if (!globalMessageHasEmitted) {
+        const newMessages = await stream.result();
+        const fallbackText = extractAssistantTextFromMessages(newMessages);
+        console.log(
+          `[loopRunner] fallback extraction: found=${Boolean(fallbackText)} length=${fallbackText.length}`
+        );
+        if (fallbackText) {
+          yield {
+            type: "message_update",
+            role: "assistant",
+            delta: fallbackText,
+          };
+        }
+      }
+      yield { type: "completed" };
+    } catch (error) {
+      yield {
+        type: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
     } finally {
-      if (!promptFinished && promptPromise) {
-        abortController.abort();
-        await promptPromise.catch(() => undefined);
-      }
+      abortController.abort();
       activeAgentLoops.delete(loopContext);
       loopContext.messages.splice(0, loopContext.messages.length);
     }
   };
 
+  const streamText: AgentLoopRunner["streamText"] = async function* (
+    messages,
+    generateOptions = {}
+  ) {
+    for await (const event of streamEvents(messages, generateOptions)) {
+      if (event.type === "message_update" && event.delta) {
+        yield event.delta;
+        continue;
+      }
+      if (event.type === "failed") {
+        throw new Error(event.error);
+      }
+    }
+  };
+
   return {
+    streamEvents,
     streamText,
     applyToolsToActiveLoops,
   };
