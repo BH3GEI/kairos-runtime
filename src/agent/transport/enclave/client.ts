@@ -6,17 +6,18 @@ import type {
   AgentEnclaveClient,
   EnclaveStreamEvent,
   StreamReplyRequest,
-} from "./enclaveProtocol";
-import type { OpenAIAgent } from "./openai";
+} from "./protocol";
+import type { OpenAIAgent } from "../../core/openai";
 
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_PROTO_PATH = resolve(CURRENT_DIR, "proto/enclave.proto");
+const DEFAULT_PROTO_PATH = resolve(CURRENT_DIR, "../../proto/enclave.proto");
 
 interface CreateGrpcEnclaveClientOptions {
   target: string;
   protoPath?: string;
   metadata?: Record<string, string>;
 }
+const MAX_GRPC_MESSAGE_BYTES = 16 * 1024 * 1024;
 
 interface GrpcStreamReplyRequest {
   chat_id: string;
@@ -166,7 +167,11 @@ export function createGrpcEnclaveClient(
   const ServiceCtor = getGrpcClientCtor(protoPath);
   const client = new ServiceCtor(
     options.target,
-    grpc.credentials.createInsecure()
+    grpc.credentials.createInsecure(),
+    {
+      "grpc.max_send_message_length": MAX_GRPC_MESSAGE_BYTES,
+      "grpc.max_receive_message_length": MAX_GRPC_MESSAGE_BYTES,
+    }
   ) as unknown as GrpcServiceClient;
   const metadata = toMetadata(options.metadata);
   return {

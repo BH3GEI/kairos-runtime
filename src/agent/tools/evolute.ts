@@ -14,7 +14,7 @@ interface EvoluteDetails {
 }
 
 const EVOLUTE_MODULE_DIR = resolve(process.cwd(), ".evolute-modules");
-const TOOL_CODE_DIR = resolve(process.cwd(), "agent/tools/evolutions");
+const TOOL_CODE_DIR = resolve(process.cwd(), "src/agent/tools/evolutions");
 const KEEP_EVOLUTE_MODULES = process.env.EVOLUTE_KEEP_MODULES === "1";
 const EVOLUTE_MANAGED_DEPS_FILE = join(EVOLUTE_MODULE_DIR, "package.json");
 const BUILTIN_PLAIN_NAMES = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
@@ -339,6 +339,7 @@ export function createEvoluteTool(): AgentTool<any, EvoluteDetails> {
           3. **Imports:** - You MUST explicitly import all external dependencies using ESM syntax (e.g., \`import * as cheerio from 'cheerio';\`).
             - For standard Bun/Node built-ins, use \`node:\` prefix (e.g., \`import { join } from 'node:path';\`).
             - Even though \`fetch\` is global in Bun, prefer defining return types for it.
+            - DON't USE REQUIRE TO IMPORT ANYTHING.
           4. **Structure:** - Your code MUST export a factory function that returns the tool object.
             - Keep the code self-contained in a single file.
           5. DON'T IMPORT ANYTHING TWICE (e.g. import type { AgentTool } from "@mariozechner/pi-ai" and import  from "@mariozechner/pi-ai" is not allowed).

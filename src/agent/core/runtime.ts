@@ -1,9 +1,9 @@
 import type { LLMMessage, OpenAIAgent } from "./openai";
-import type { TelegramMessage } from "../telegram/types";
-import { system } from "./prompt";
-import { RemoteAsyncIterable } from "./remoteAsyncIterable";
-import type { AgentEnclaveClient } from "./enclaveProtocol";
-import { createLocalEnclaveClient } from "./enclaveClient";
+import type { TelegramMessage } from "../../telegram/types";
+import { system } from "../prompt";
+import { RemoteAsyncIterable } from "../remoteAsyncIterable";
+import type { AgentEnclaveClient } from "../transport/enclave/protocol";
+import { createLocalEnclaveClient } from "../transport/enclave/client";
 
 export interface AgentRuntime {
   observe: (message: TelegramMessage) => void;
@@ -34,7 +34,6 @@ export function createInMemoryAgentRuntime(
   const observe: AgentRuntime["observe"] = (message) => {
     const history = historyByChat.get(message.chatId) ?? [];
     history.push(message);
-    console.log(message);
     if (history.length > maxHistoryPerChat) {
       history.splice(0, history.length - maxHistoryPerChat);
     }

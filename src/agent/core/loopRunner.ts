@@ -5,7 +5,7 @@ import {
   type AgentTool,
 } from "@mariozechner/pi-agent-core";
 import type { Message, Model } from "@mariozechner/pi-ai";
-import { consumePendingEvolutedTool } from "./tools/evolute";
+import { consumePendingEvolutedTool } from "../tools/evolute";
 
 export interface AgentLoopMessage {
   role: "system" | "user" | "assistant";
@@ -99,55 +99,6 @@ function extractLatestUserPrompt(messages: AgentLoopMessage[]): string {
     .filter((item): item is AgentLoopMessage & { role: "user" } => item.role === "user")
     .find((item) => item.content.trim().length > 0);
   return latestUserMessage?.content ?? "";
-}
-
-function createTextStreamQueue() {
-  const chunks: string[] = [];
-  let isDone = false;
-  let error: unknown;
-  let wakeConsumer: (() => void) | null = null;
-
-  const wake = () => {
-    if (!wakeConsumer) {
-      return;
-    }
-    const resolve = wakeConsumer;
-    wakeConsumer = null;
-    resolve();
-  };
-
-  return {
-    push(chunk: string) {
-      chunks.push(chunk);
-      wake();
-    },
-    finish() {
-      isDone = true;
-      wake();
-    },
-    fail(err: unknown) {
-      error = err;
-      isDone = true;
-      wake();
-    },
-    async *consume(): AsyncGenerator<string, void, unknown> {
-      while (!isDone || chunks.length > 0) {
-        if (chunks.length > 0) {
-          const chunk = chunks.shift();
-          if (chunk) {
-            yield chunk;
-          }
-          continue;
-        }
-        await new Promise<void>((resolve) => {
-          wakeConsumer = resolve;
-        });
-      }
-      if (error) {
-        throw error;
-      }
-    },
-  };
 }
 
 function extractAssistantTextFromMessages(messages: AgentMessage[]): string {

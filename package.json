@@ -5,13 +5,15 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "concurrently \"bun run dev:state\" \"bun run dev:enclave\"",
     "dev:state": "AGENT_ENCLAVE_TARGET=127.0.0.1:50051 bun run --watch src/index.ts",
-    "dev:enclave": "bun run --watch src/agent/enclaveServer.ts"
+    "dev:enclave": "bun run src/agent/transport/enclave/server.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
     "@mariozechner/pi-agent-core": "^0.54.0",
     "@mariozechner/pi-ai": "^0.54.0",
+    "@steipete/bird": "^0.8.0",
+    "NeteaseCloudMusicApi": "^4.29.0",
     "asciichart": "^1.5.25",
     "cheerio": "^1.2.0",
     "elysia": "latest",

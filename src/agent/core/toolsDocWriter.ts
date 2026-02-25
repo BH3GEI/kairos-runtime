@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_TOOLS_MEMORY_FILE = resolve(CURRENT_DIR, "memory_files/Tools.md");
+export const DEFAULT_TOOLS_MEMORY_FILE = resolve(CURRENT_DIR, "../memory_files/Tools.md");
 
 function schemaTypeToText(schema: any): string {
   if (!schema || typeof schema !== "object") {

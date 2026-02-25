@@ -1,14 +1,14 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadDynamicToolsFromDirectory } from "./dynamicToolsLoader";
+import { loadDynamicToolsFromDirectory } from "../dynamicToolsLoader";
 import {
   createAgentLoopRunner,
   type AgentLoopRunner,
   type AgentLoopStreamEvent,
 } from "./loopRunner";
-import { createApoptosisTool } from "./tools/apoptosis";
-import { createEvoluteTool } from "./tools/evolute";
+import { createApoptosisTool } from "../tools/apoptosis";
+import { createEvoluteTool } from "../tools/evolute";
 import { createToolsRegistry } from "./toolsRegistry";
 import { createToolsDocWriter } from "./toolsDocWriter";
 
@@ -53,7 +53,7 @@ export interface OpenAIEnclaveRuntime {
 const DEFAULT_MODEL = "gpt-4o-mini";
 const DEFAULT_BASE_URL = "https://api.deepseek.com/v1";
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
-const EVOLUTIONS_DIR = resolve(CURRENT_DIR, "tools/evolutions");
+const EVOLUTIONS_DIR = resolve(CURRENT_DIR, "../tools/evolutions");
 
 export function createOpenAIAgent(
   options: CreateOpenAIAgentOptions = {}
@@ -162,7 +162,6 @@ function createAgentCore(options: CreateOpenAIAgentOptions): AgentCore {
   toolsDocWriter.sync(toolsRegistry.getCurrentTools());
   void (async () => {
     const loaded = await loadDynamicToolsFromDirectory(EVOLUTIONS_DIR);
-    // const loaded = {tools: [], errors: []}; 
     for (const tool of loaded.tools) {
       toolsRegistry.registerDynamicTool(tool);
     }

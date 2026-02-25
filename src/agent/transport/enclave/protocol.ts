@@ -1,5 +1,4 @@
-import type { LLMMessage } from "./openai";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { LLMMessage } from "../../core/openai";
 
 export interface StreamReplyRequest {
   chatId: number | string;

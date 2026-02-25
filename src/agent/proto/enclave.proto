@@ -23,5 +23,6 @@ message StreamReplyEvent {
   string tool_name = 4;
   string tool_call_id = 5;
   string result_json = 6;
-  string error = 7;
+  string ts_code = 7;
+  string error = 8;
 }
