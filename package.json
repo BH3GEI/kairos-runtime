@@ -3,6 +3,7 @@
   "version": "1.0.50",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "test:embed": "bun run src/test-embed.ts",
     "dev": "concurrently \"bun run dev:state\" \"bun run dev:enclave\"",
     "dev:state": "AGENT_ENCLAVE_TARGET=127.0.0.1:50051 bun run --watch src/index.ts",
     "dev:enclave": "bun run src/agent/transport/enclave/server.ts"

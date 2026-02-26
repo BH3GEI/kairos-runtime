@@ -4,7 +4,12 @@ import { system } from "../agent/prompt";
 import { RemoteAsyncIterable } from "../agent/remoteAsyncIterable";
 import type { AgentEnclaveClient } from "../agent/transport/enclave/protocol";
 import { createLocalEnclaveClient } from "../agent/transport/enclave/client";
-import { createContextAssembler, createInMemoryContextStore } from "./context";
+import {
+  createContextAssembler,
+  createInMemoryContextStore,
+  type ContextAssembler,
+  type ContextStore,
+} from "./context";
 
 export interface ClientRuntime {
   recordMessage: (message: TelegramMessage) => void;
@@ -18,6 +23,8 @@ export interface CreateClientRuntimeOptions {
   agent?: OpenAIAgent;
   enclaveClient?: AgentEnclaveClient;
   maxHistoryPerChat?: number;
+  contextStore?: ContextStore;
+  contextAssembler?: ContextAssembler;
 }
 
 export function createClientRuntime(options: CreateClientRuntimeOptions): ClientRuntime {
@@ -27,10 +34,12 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     throw new Error("createClientRuntime requires either agent or enclaveClient.");
   }
 
-  const contextStore = createInMemoryContextStore({
-    maxHistoryPerChat: options.maxHistoryPerChat,
-  });
-  const contextAssembler = createContextAssembler();
+  const contextStore =
+    options.contextStore ??
+    createInMemoryContextStore({
+      maxHistoryPerChat: options.maxHistoryPerChat,
+    });
+  const contextAssembler = options.contextAssembler ?? createContextAssembler();
 
   const recordMessage: ClientRuntime["recordMessage"] = (message) => {
     contextStore.append(message);
