@@ -11,12 +11,14 @@ export interface MessageNode {
   vector: number[];
 }
 
+export type SessionStatus = "L1_ACTIVE" | "L2_BACKGROUND" | "L3_ARCHIVED";
+
 export interface SessionControlBlock {
   sessionId: string;
   topicSummary: string;
   centerVector: number[];
   recentVector: number[] | null;
-  status: "L1_ACTIVE" | "L2_BACKGROUND";
+  status: SessionStatus;
   lastActiveTime: number;
   messageIds: Set<number>;
   rootMessageIds: Set<number>;

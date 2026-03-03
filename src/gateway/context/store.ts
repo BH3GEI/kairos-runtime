@@ -6,6 +6,7 @@ import type {
   ContextStore,
   MessageNode,
   SessionControlBlock,
+  SessionStatus,
 } from "./types";
 
 export interface CreateInMemoryContextStoreOptions {
@@ -24,6 +25,7 @@ const MEDIUM_MESSAGE_LENGTH = 8;
 const SHORT_MESSAGE_LENGTH = 4;
 const RECENT_SESSIONS_COUNT = 5;
 const RECENT_CHAT_MESSAGES_COUNT = 10;
+const SESSION_LRU_EXPIRE_MS = 60 * 60 * 1000;
 
 export function createInMemoryContextStore(
   options: CreateInMemoryContextStoreOptions = {}
@@ -47,6 +49,7 @@ export function createInMemoryContextStore(
       const messageId = message.messageId;
       const isShortMessage = message.context.length <= SHORT_MESSAGE_LENGTH;
       const ccb = getOrCreateChatControlBlock(chatControlBlocks, chatId);
+      downgradeExpiredSessions(ccb, now, SESSION_LRU_EXPIRE_MS);
       const existing = ccb.messageNodes.get(messageId);
       if (existing) {
         existing.message = message;
@@ -151,28 +154,32 @@ export function createInMemoryContextStore(
         return [[], []];
       }
 
-      const recentMessages = Array.from(ccb.messageNodes.values())
-        .sort((a, b) => a.timestamp - b.timestamp)
-        .slice(-RECENT_CHAT_MESSAGES_COUNT)
-        .map((item) => item.message);
-
       const session = ccb.sessionControlBlocks.get(node.sessionId);
       if (!session) {
+        const recentMessages = Array.from(ccb.messageNodes.values())
+          .sort((a, b) => a.timestamp - b.timestamp)
+          .slice(-RECENT_CHAT_MESSAGES_COUNT)
+          .map((item) => item.message);
         return [recentMessages, []];
       }
 
-      const sessionMessages = [...session.messageIds]
+      const allSessionMessages = [...session.messageIds]
         .map((id) => ccb.messageNodes.get(id))
         .filter((item): item is MessageNode => Boolean(item))
         .sort((a, b) => a.timestamp - b.timestamp)
         .map((item) => item.message);
-      if (sessionMessages.length <= maxContextMessages) {
-        return [recentMessages, sessionMessages];
-      }
-      return [
-        recentMessages,
-        sessionMessages.slice(sessionMessages.length - maxContextMessages),
-      ];
+      const sessionMessages =
+        allSessionMessages.length <= maxContextMessages
+          ? allSessionMessages
+          : allSessionMessages.slice(allSessionMessages.length - maxContextMessages);
+      const sessionMessageIds = new Set(sessionMessages.map((item) => item.messageId));
+      const recentMessages = Array.from(ccb.messageNodes.values())
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .filter((item) => !sessionMessageIds.has(item.messageId))
+        .slice(0, RECENT_CHAT_MESSAGES_COUNT)
+        .sort((a, b) => a.timestamp - b.timestamp)
+        .map((item) => item.message);
+      return [recentMessages, sessionMessages];
     },
     debugPrintSessionControlBlocks: ({
       chatId,
@@ -281,6 +288,37 @@ function updateLastMessageNodeId(ccb: ChatControlBlock, candidate: MessageNode):
       : null;
   if (!previous || candidate.timestamp >= previous.timestamp) {
     ccb.lastMessageNodeId = candidate.messageId;
+  }
+}
+
+async function archiveSession(session: SessionControlBlock): Promise<void> {
+  await Promise.resolve();
+}
+
+function downgradeSessionStatus(session: SessionControlBlock): void {
+  if (session.status === "L1_ACTIVE") {
+    session.status = "L2_BACKGROUND";
+  } else if (session.status === "L2_BACKGROUND") {
+    session.status = "L3_ARCHIVED";
+  }
+}
+
+async function downgradeExpiredSessions(
+  ccb: ChatControlBlock,
+  now: number,
+  expireAfterMs: number
+): Promise<void> {
+  for (const session of ccb.sessionControlBlocks.values()) {
+    if (now - session.lastActiveTime > expireAfterMs) {
+      downgradeSessionStatus(session);
+      if (session.status === "L3_ARCHIVED") {
+        await archiveSession(session);
+        ccb.sessionControlBlocks.delete(session.sessionId);
+        for (const messageId of session.messageIds) {
+          ccb.messageNodes.delete(messageId);
+        }
+      }
+    }
   }
 }
 
