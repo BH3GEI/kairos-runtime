@@ -40,7 +40,7 @@ export function createMessageGateway(
 
   const handleMessage = async (message: TelegramMessage) => {
     console.log("handleMessage", message);
-    options.runtime.recordMessage(message);
+    await options.runtime.recordMessage(message);
 
     // blocked users get recorded but never trigger agent
     if (options.userRoles?.isBlocked(message.userId)) {
