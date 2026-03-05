@@ -16,6 +16,8 @@ export type SessionStatus = "L1_ACTIVE" | "L2_BACKGROUND" | "L3_ARCHIVED";
 export interface SessionControlBlock {
   sessionId: string;
   topicSummary: string;
+  /** Number of messages in session when topicSummary was last updated (for cloud summarization). */
+  lastSummarizedMessageCount: number;
   centerVector: number[];
   recentVector: number[] | null;
   status: SessionStatus;
@@ -37,6 +39,8 @@ export type ContextMessagesPair = [recentMessages: TelegramMessage[], sessionMes
 export interface ContextStore {
   ingestMessage: (input: { message: TelegramMessage }) => Promise<void>;
   getContextByAnchor: (input: { chatId: number; messageId: number }) => ContextMessagesPair;
+  /** For evaluation: return sessionId for a message, or null if not found. */
+  getSessionIdForMessage?: (input: { chatId: number; messageId: number }) => string | null;
   debugPrintSessionControlBlocks: (input?: {
     chatId?: number;
     includeVectors?: boolean;

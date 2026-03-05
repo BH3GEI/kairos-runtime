@@ -13,6 +13,8 @@ import {
   type ContextAssembler,
   type ContextStore,
 } from "./context";
+import { createOllamaLocalModel, createOpenAICloudModel } from "../llm";
+import { createOllamaDenseEmbedder } from "../embedding";
 
 export interface ClientRuntime {
   recordMessage: (message: TelegramMessage) => Promise<void>;
@@ -43,7 +45,20 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
   }
 
   const contextStore =
-    options.contextStore ?? createInMemoryContextStore();
+    options.contextStore ?? createInMemoryContextStore({
+      embedder: createOllamaDenseEmbedder({
+        model: "qwen3-embedding:0.6b"
+      }),
+      // localModel: createOllamaLocalModel(),
+      cloudModel: createOpenAICloudModel({
+        apiKey: process.env.ARK_API_KEY,
+        baseURL: "https://ark.cn-beijing.volces.com/api/v3",
+        model: "doubao-seed-2-0-lite-260215",
+        // apiKey: process.env.DEEPSEEK_API_KEY,
+        // baseURL: "https://api.deepseek.com/v1",
+        // model: "deepseek-chat",
+      }),
+    });
   const contextAssembler = options.contextAssembler ?? createContextAssembler();
 
   const recordMessage: ClientRuntime["recordMessage"] = async (message) => {

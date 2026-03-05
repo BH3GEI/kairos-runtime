@@ -9,13 +9,11 @@ const samples = [
 
 async function main() {
   const embedder = createDenseEmbedder();
-  const vectors = await embedder.embedDense(samples);
-
   console.log(`[embed] provider=${process.env.EMBED_PROVIDER ?? "ollama"}`);
-  console.log(`[embed] inputs=${samples.length}, outputs=${vectors.length}`);
+  console.log(`[embed] inputs=${samples.length}`);
 
-  for (let i = 0; i < vectors.length; i += 1) {
-    const vector = vectors[i] ?? [];
+  for (let i = 0; i < samples.length; i += 1) {
+    const vector = await embedder.embedDense(samples[i]);
     const preview = vector.slice(0, 5).map((value) => value.toFixed(6));
     console.log(
       `[embed] #${i + 1} dim=${vector.length}, head=[${preview.join(", ")}]`,

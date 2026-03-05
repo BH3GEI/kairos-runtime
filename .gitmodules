@@ -1,0 +1,3 @@
+[submodule "dramatic-conversation-disentanglement"]
+	path = dramatic-conversation-disentanglement
+	url = https://github.com/kentchang/dramatic-conversation-disentanglement

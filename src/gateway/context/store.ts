@@ -1,6 +1,13 @@
 import { gamma, max } from "mathjs";
 import { createDenseEmbedder, type DenseEmbedder } from "../../embedding";
+import type { CloudModel, LocalModel } from "../../llm";
 import type { TelegramMessage } from "../../telegram/types";
+import {
+  decideSessionByLlm,
+  decideSessionByReranker,
+  type SessionDeciderResult,
+  type SessionSummary,
+} from "./sessionDecider";
 import type {
   ChatControlBlock,
   ContextStore,
@@ -18,6 +25,16 @@ export interface CreateInMemoryContextStoreOptions {
   alphaCenter?: number;
   maxContextMessages?: number;
   maxSessionsPerChat?: number;
+  /** When set with localModel, used as fallback when pickBestSession returns null. */
+  sessionDecider?: (input: {
+    message: TelegramMessage;
+    sessions: SessionSummary[];
+    localModel?: LocalModel;
+    cloudModel?: CloudModel;
+  }) => Promise<SessionDeciderResult>;
+  localModel?: LocalModel;
+  /** Optional cloud model for summarizing session topic when 5 new messages accumulate. */
+  cloudModel?: CloudModel;
 }
 
 const GHOST_CONTEXT_WINDOW_MS = 30 * 1000;
@@ -26,13 +43,16 @@ const SHORT_MESSAGE_LENGTH = 4;
 const RECENT_SESSIONS_COUNT = 5;
 const RECENT_CHAT_MESSAGES_COUNT = 10;
 const SESSION_LRU_EXPIRE_MS = 60 * 60 * 1000;
+const TOPIC_SUMMARY_CONCAT_MAX = 3;
+const TOPIC_SUMMARY_CLOUD_BATCH = 5;
+const IMPOSSIBLE_SIMILARITY_SCORE_THRESHOLD = 0.35;
 
 export function createInMemoryContextStore(
   options: CreateInMemoryContextStoreOptions = {}
 ): ContextStore {
   const embedder = options.embedder ?? createDenseEmbedder();
-  const similarityThreshold = options.similarityThreshold ?? 0.57;
-  const shortMessageThreshold = options.shortMessageThreshold ?? 0.48;
+  const similarityThreshold = options.similarityThreshold ?? 0.60;
+  const shortMessageThreshold = options.shortMessageThreshold ?? 0.45;
   // const alphaTime = options.alphaTime ?? 0.25;
   // const lambda = options.lambda ?? 1 / (2 * 60 * 1000);
   const gammaTime = 0.85;
@@ -41,9 +61,14 @@ export function createInMemoryContextStore(
   const maxContextMessages = options.maxContextMessages ?? 250;
   const maxSessionsPerChat = options.maxSessionsPerChat ?? 32;
   const chatControlBlocks = new Map<number, ChatControlBlock>();
+  // const sessionDecider = options.sessionDecider ?? decideSessionByLlm;
+  const sessionDecider = options.sessionDecider ?? decideSessionByReranker;
+  const localModel = options.localModel;
+  const cloudModel = options.cloudModel;
 
   return {
     ingestMessage: async ({ message }) => {
+      // console.log("ingestMessage", message);
       const now = message.timestamp;
       const chatId = message.chatId;
       const messageId = message.messageId;
@@ -102,9 +127,22 @@ export function createInMemoryContextStore(
           similarityThreshold,
           shortMessageThreshold
         );
-        if (best) {
+        if (best && best.session) {
           targetSession = best.session;
         }
+        // const start = performance.now();
+        if (best.score >= IMPOSSIBLE_SIMILARITY_SCORE_THRESHOLD) {
+          targetSession = await tryAssignSessionByDecider({
+            targetSession,
+            ccb,
+            message,
+            localModel,
+            cloudModel,
+            sessionDecider,
+          });
+        }
+        // const elapsed = performance.now() - start;
+        // console.log("tryAssignSessionByDecider", elapsed, "ms", ccb.sessionControlBlocks.size, "sessions");
       }
 
       if (!targetSession) {
@@ -142,7 +180,8 @@ export function createInMemoryContextStore(
           alphaCenter
         );
       }
-      targetSession.topicSummary = buildTopicSummary(message.context); // TODO: 需要修改
+      // await updateTopicSummary(ccb, targetSession, cloudModel);
+      void updateTopicSummary(ccb, targetSession, cloudModel).catch(error => console.error("updateTopicSummary error", error));
     },
     getContextByAnchor: ({ chatId, messageId }) => {
       const ccb = chatControlBlocks.get(chatId);
@@ -181,6 +220,12 @@ export function createInMemoryContextStore(
         .map((item) => item.message);
       return [recentMessages, sessionMessages];
     },
+    getSessionIdForMessage: ({ chatId, messageId }) => {
+      const ccb = chatControlBlocks.get(chatId);
+      if (!ccb) return null;
+      const node = ccb.messageNodes.get(messageId);
+      return node?.sessionId ?? null;
+    },
     debugPrintSessionControlBlocks: ({
       chatId,
       includeVectors = false,
@@ -213,6 +258,7 @@ export function createInMemoryContextStore(
           const summary = {
             sessionId: session.sessionId,
             topicSummary: session.topicSummary,
+            lastSummarizedMessageCount: session.lastSummarizedMessageCount,
             status: session.status,
             lastActiveTime: session.lastActiveTime,
             messageCount: session.messageIds.size,
@@ -323,10 +369,8 @@ async function downgradeExpiredSessions(
 }
 
 async function embedMessage(embedder: DenseEmbedder, text: string): Promise<number[]> {
-  const source = text.trim() || "(empty)";
-  const vectors = await embedder.embedDense([source]);
-  const vector = vectors[0];
-  if (!Array.isArray(vector)) {
+  const vector = await embedder.embedDense(text.trim() || "(empty)");
+  if (!Array.isArray(vector) || vector.length === 0) {
     throw new Error("Embedding provider returned an empty vector.");
   }
   return vector;
@@ -342,7 +386,7 @@ function pickBestSession(
   isShortMessage: boolean,
   similarityThreshold: number,
   shortMessageThreshold: number
-): { session: SessionControlBlock; score: number } | null {
+): { session: SessionControlBlock | null; score: number } {
   let winner: { session: SessionControlBlock; score: number } | null = null;
   for (const session of ccb.sessionControlBlocks.values()) {
     const score = scoreMessageToSession(vector, session, now, alphaTime, lambda);
@@ -363,7 +407,7 @@ function pickBestSession(
     let shortWinner: { session: SessionControlBlock; score: number } | null = null;
     for (const session of recentSessions) {
       const score = scoreMessageToSession(vector, session, now, alphaTime, lambda);
-      console.log("short", session.sessionId, score);
+      // console.log("short", session.sessionId, score);
       if (!shortWinner || score > shortWinner.score) {
         shortWinner = { session, score };
       }
@@ -379,7 +423,41 @@ function pickBestSession(
       .sort((a, b) => b.lastActiveTime - a.lastActiveTime);
     return { session: recentSessions[0], score: 0 };
   }
-  return null;
+  return {session: null, score: winner?.score ?? 0};
+}
+
+async function tryAssignSessionByDecider(input: {
+  targetSession: SessionControlBlock | null;
+  ccb: ChatControlBlock;
+  message: TelegramMessage;
+  localModel: LocalModel | undefined;
+  cloudModel: CloudModel | undefined;
+  sessionDecider: (input: {
+    message: TelegramMessage;
+    sessions: SessionSummary[];
+    localModel?: LocalModel;
+    cloudModel?: CloudModel;
+  }) => Promise<SessionDeciderResult>;
+}): Promise<SessionControlBlock | null> {
+  const { targetSession, ccb, message, localModel, cloudModel, sessionDecider } = input;
+  if (targetSession || (!localModel && !cloudModel) || ccb.sessionControlBlocks.size === 0) {
+    return targetSession;
+  }
+
+  const sessions: SessionSummary[] = Array.from(ccb.sessionControlBlocks.values()).map((s) => ({
+    sessionId: s.sessionId,
+    topicSummary: s.topicSummary,
+  }));
+  const decision = await sessionDecider({
+    message,
+    sessions,
+    localModel,
+    cloudModel,
+  });
+  if (decision.action === "assign" && ccb.sessionControlBlocks.has(decision.sessionId)) {
+    return ccb.sessionControlBlocks.get(decision.sessionId)!;
+  }
+  return targetSession;
 }
 function scoreMessage(
   vector1: number[],
@@ -438,6 +516,7 @@ function createSession(
   const session: SessionControlBlock = {
     sessionId,
     topicSummary: buildTopicSummary(node.message.context),
+    lastSummarizedMessageCount: 1,
     centerVector: node.vector.slice(),
     recentVector: isShortMessage ? null : node.vector.slice(),
     status: "L2_BACKGROUND",
@@ -481,6 +560,57 @@ function buildTopicSummary(text: string): string {
     return normalized;
   }
   return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function getSessionMessagesSorted(
+  ccb: ChatControlBlock,
+  session: SessionControlBlock
+): MessageNode[] {
+  return [...session.messageIds]
+    .map((id) => ccb.messageNodes.get(id))
+    .filter((item): item is MessageNode => Boolean(item))
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+async function updateTopicSummary(
+  ccb: ChatControlBlock,
+  session: SessionControlBlock,
+  cloudModel: LocalModel | undefined
+): Promise<void> {
+  const nodes = getSessionMessagesSorted(ccb, session);
+  const N = nodes.length;
+  const lastSummarized = session.lastSummarizedMessageCount ?? 0;
+  if (N <= TOPIC_SUMMARY_CONCAT_MAX) {
+    session.topicSummary = nodes
+      .map((n) => n.message.context.trim())
+      .filter(Boolean)
+      .join("\n") || "(empty)";
+    session.lastSummarizedMessageCount = N;
+    return;
+  }
+  const newCount = N - lastSummarized;
+  if (newCount < TOPIC_SUMMARY_CLOUD_BATCH) {
+    return;
+  }
+  if (!cloudModel) {
+    session.lastSummarizedMessageCount = N;
+    return;
+  }
+  const from = lastSummarized;
+  const batch = nodes.slice(from, from + TOPIC_SUMMARY_CLOUD_BATCH);
+  const newTexts = batch.map((n) => n.message.context.trim()).filter(Boolean);
+  const prompt = `You are a session summarizer. Given the previous topic summary and new messages, output a single short topic summary (one line, under 80 chars).
+
+Previous topic summary:
+${session.topicSummary}
+
+New messages:
+${newTexts.join("\n")}
+
+Output only the new topic summary, no explanation:`;
+  const { text } = await cloudModel.complete({ prompt });
+  session.topicSummary = text.trim().slice(0, 80) || session.topicSummary;
+  session.lastSummarizedMessageCount = from + TOPIC_SUMMARY_CLOUD_BATCH;
 }
 
 // function evictOldestSessionIfNeeded(ccb: ChatControlBlock, maxSessionsPerChat: number): void {

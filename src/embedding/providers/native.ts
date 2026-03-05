@@ -10,7 +10,7 @@ export const createNativeDenseEmbedder = (
   const moduleName = options.moduleName ?? "@memoh-lite/embedder-native";
 
   return {
-    async embedDense(): Promise<number[][]> {
+    async embedDense(_text: string): Promise<number[]> {
       throw new Error(
         `Native embedder is not implemented yet. Expected module: ${moduleName}`,
       );

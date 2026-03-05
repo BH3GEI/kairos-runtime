@@ -10,12 +10,6 @@ const BYTES_PER_GB = 1024 ** 3;
 const FULL_MODEL_THRESHOLD_GB = 8;
 const Q8_MODEL_THRESHOLD_GB = 4;
 
-const parseBatchSize = (value: string | undefined): number | undefined => {
-  if (!value) return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
-};
-
 const pickAutoModelByMemory = (): string => {
   const totalMemoryGB = totalmem() / BYTES_PER_GB;
   if (totalMemoryGB >= FULL_MODEL_THRESHOLD_GB) {
@@ -48,8 +42,6 @@ export const createDenseEmbedder = (
   return createOllamaDenseEmbedder({
     baseUrl: options.ollamaBaseUrl ?? process.env.OLLAMA_BASE_URL,
     model: resolveOllamaModel(options),
-    batchSize:
-      options.batchSize ?? parseBatchSize(process.env.EMBED_BATCH_SIZE),
   });
 };
 

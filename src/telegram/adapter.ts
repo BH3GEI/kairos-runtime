@@ -168,7 +168,7 @@ function toTelegramMessage(ctx: Context): TelegramMessage | null {
     timestamp: (message.date ?? Math.floor(Date.now() / 1000)) * 1000,
     metadata: {
       isBot: message.from?.is_bot ?? false,
-      username: message.from?.username ?? null,
+      username: message.from?.username ?? message.from?.first_name ?? null,
       replyToMessageId: message.reply_to_message?.message_id ?? null,
       replyToUserId: message.reply_to_message?.from?.id?.toString() ?? null,
       isReplyToMe: message.reply_to_message?.from?.id === ctx.me.id,

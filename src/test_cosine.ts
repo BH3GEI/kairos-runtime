@@ -24,7 +24,8 @@ async function main() {
       const textB = (await rl.question("句子2 > ")).trim();
       if (textB.toLowerCase() === "exit") break;
 
-      const [vecA, vecB] = await embedder.embedDense([textA || "(empty)", textB || "(empty)"]);
+      const vecA = await embedder.embedDense(textA || "(empty)");
+      const vecB = await embedder.embedDense(textB || "(empty)");
       const score = cosine(vecA, vecB);
 
       console.log(`[cosine] score=${score}`);

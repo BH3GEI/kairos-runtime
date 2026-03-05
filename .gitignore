@@ -57,3 +57,10 @@ data/
 
 # logs
 .memoh-debug
+
+# python
+__pycache__/
+
+# unused files
+irc_disentangle/
+# dramatic-conversation-disentanglement/
