@@ -159,8 +159,7 @@ function toTelegramMessage(ctx: Context): TelegramMessage | null {
 
   const context = "text" in message ? (message.text ?? "") : (message.caption ?? "");
   const stickerEmoji = message.sticker?.emoji ?? "";
-  const photoFileIds = stickerEmoji ? "" : message.photo?.map((photo) => photo.file_id).join(", ") ?? "";
-  const photoPlaceholder = photoFileIds ? `[photo:${photoFileIds}]` : "";
+  const photoPlaceholder = message.photo?.map((photo) => photo.file_id ? "[photo]" : "").join(",") ?? "";
   return {
     userId: message.from?.id?.toString() ?? "unknown",
     messageId: message.message_id,
