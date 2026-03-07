@@ -1,4 +1,4 @@
-# pi-memOS (memoh-lite) 架构总览
+# kairos-runtime 架构总览
 
 ## 1. 核心架构哲学：混合微内核 (Hybrid Microkernel)
 系统主体采用 TypeScript 作为控制平面 (Control Plane)，负责 Agent 沙箱的生命周期调度与大模型编排。而高并发、重 IO 的持久化操作则下沉至由 Rust 编写的底层 VFS 服务。
