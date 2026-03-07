@@ -1,7 +1,7 @@
-import { gamma, max } from "mathjs";
 import { createDenseEmbedder, type DenseEmbedder } from "../../model/embedding";
 import type { CloudModel, LocalModel } from "../../model/llm";
 import type { TelegramMessage } from "../../types/message";
+import { createArchiverService } from "../../archiver";
 import {
   decideSessionByLlm,
   decideSessionByReranker,
@@ -65,6 +65,7 @@ export function createInMemoryContextStore(
   const sessionDecider = options.sessionDecider ?? decideSessionByReranker;
   const localModel = options.localModel;
   const cloudModel = options.cloudModel;
+  const archiverService = createArchiverService({ cloudModel });
 
   return {
     ingestMessage: async ({ message }) => {
@@ -74,7 +75,7 @@ export function createInMemoryContextStore(
       const messageId = message.messageId;
       const isShortMessage = message.context.length <= SHORT_MESSAGE_LENGTH;
       const ccb = getOrCreateChatControlBlock(chatControlBlocks, chatId);
-      downgradeExpiredSessions(ccb, now, SESSION_LRU_EXPIRE_MS);
+      downgradeExpiredSessions(ccb, now, SESSION_LRU_EXPIRE_MS, archiverService);
       const existing = ccb.messageNodes.get(messageId);
       if (existing) {
         existing.message = message;
@@ -338,8 +339,29 @@ function updateLastMessageNodeId(ccb: ChatControlBlock, candidate: MessageNode):
   }
 }
 
-async function archiveSession(session: SessionControlBlock): Promise<void> {
-  await Promise.resolve();
+async function archiveSession(
+  ccb: ChatControlBlock,
+  session: SessionControlBlock,
+  archiverService: { runBackgroundArchive: (session: {
+    sessionId: string;
+    chatId: number;
+    centerVector: number[];
+    topicSummary: string;
+    messages: TelegramMessage[];
+  }) => Promise<void> }
+): Promise<void> {
+  const sortedMessages = Array.from(session.messageIds)
+    .map((id) => ccb.messageNodes.get(id)?.message ?? null)
+    .filter((message): message is TelegramMessage => Boolean(message))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  await archiverService.runBackgroundArchive({
+    sessionId: session.sessionId,
+    chatId: ccb.chatId,
+    centerVector: session.centerVector,
+    topicSummary: session.topicSummary,
+    messages: sortedMessages,
+  });
 }
 
 function downgradeSessionStatus(session: SessionControlBlock): void {
@@ -354,13 +376,20 @@ function downgradeSessionStatus(session: SessionControlBlock): void {
 async function downgradeExpiredSessions(
   ccb: ChatControlBlock,
   now: number,
-  expireAfterMs: number
+  expireAfterMs: number,
+  archiverService: { runBackgroundArchive: (session: {
+    sessionId: string;
+    chatId: number;
+    centerVector: number[];
+    topicSummary: string;
+    messages: TelegramMessage[];
+  }) => Promise<void> }
 ): Promise<void> {
   for (const session of ccb.sessionControlBlocks.values()) {
     if (now - session.lastActiveTime > expireAfterMs) {
       downgradeSessionStatus(session);
       if (session.status === "L3_ARCHIVED") {
-        await archiveSession(session);
+        void archiveSession(ccb, session, archiverService);
         // ccb.sessionControlBlocks.delete(session.sessionId);
         // for (const messageId of session.messageIds) {
         //   ccb.messageNodes.delete(messageId);
@@ -452,7 +481,7 @@ async function tryAssignSessionByDecider(input: {
     return targetSession;
   }
 
-  const sessions: SessionSummary[] = Array.from(ccb.sessionControlBlocks.values()).map((s) => ({
+  const sessions: SessionSummary[] = Array.from(ccb.sessionControlBlocks.values()).filter((s) => s.status !== "L3_ARCHIVED").map((s) => ({
     sessionId: s.sessionId,
     topicSummary: s.topicSummary,
   }));
@@ -583,7 +612,7 @@ function getSessionMessagesSorted(
 async function updateTopicSummary(
   ccb: ChatControlBlock,
   session: SessionControlBlock,
-  cloudModel: LocalModel | undefined
+  cloudModel: CloudModel | undefined
 ): Promise<void> {
   const nodes = getSessionMessagesSorted(ccb, session);
   const N = nodes.length;
@@ -616,7 +645,9 @@ New messages:
 ${newTexts.join("\n")}
 
 Output only the new topic summary, no explanation:`;
-  const { text } = await cloudModel.complete({ prompt });
+  const { text } = await cloudModel.complete({
+    messages: [{ role: "user", content: prompt }],
+  });
   session.topicSummary = text.trim().slice(0, 80) || session.topicSummary;
   session.lastSummarizedMessageCount = from + TOPIC_SUMMARY_CLOUD_BATCH;
 }

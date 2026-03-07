@@ -1,4 +1,5 @@
 import type { TelegramMessage } from "../../types/message";
+import type { LLMMessage } from "../../types/message";
 import type { LocalModel, CloudModel } from "../../model/llm";
 
 export interface SessionSummary {
@@ -29,6 +30,10 @@ ${sessionList}
 Current message (speaker: ${user}): ${message.context}
 
 Your JSON reply:`;
+}
+
+function buildDeciderMessages(message: TelegramMessage, sessions: SessionSummary[]): LLMMessage[] {
+  return [{ role: "user", content: buildDeciderPrompt(message, sessions) }];
 }
 
 function parseDeciderOutput(
@@ -164,7 +169,8 @@ export async function decideSessionByLlm(input: {
     return { action: "create" };
   }
   const validSessionIds = new Set(sessions.map((s) => s.sessionId));
-  const prompt = buildDeciderPrompt(message, sessions);
-  const { text } = await model.complete({ prompt });
+  const { text } = cloudModel
+    ? await cloudModel.complete({ messages: buildDeciderMessages(message, sessions) })
+    : await localModel!.complete({ prompt: buildDeciderPrompt(message, sessions) });
   return parseDeciderOutput(text, validSessionIds);
 }

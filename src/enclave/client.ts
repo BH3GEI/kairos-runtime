@@ -57,7 +57,7 @@ function getGrpcClientCtor(protoPath: string): grpc.ServiceClientConstructor {
     oneofs: true,
   });
   const loaded = grpc.loadPackageDefinition(packageDefinition) as {
-    memoh_lite?: {
+    kairos?: {
       enclave?: {
         v1?: {
           AgentEnclaveService?: grpc.ServiceClientConstructor;
@@ -65,7 +65,7 @@ function getGrpcClientCtor(protoPath: string): grpc.ServiceClientConstructor {
       };
     };
   };
-  const ctor = loaded.memoh_lite?.enclave?.v1?.AgentEnclaveService;
+  const ctor = loaded.kairos?.enclave?.v1?.AgentEnclaveService;
   if (!ctor) {
     throw new Error("Failed to load AgentEnclaveService from proto definition.");
   }

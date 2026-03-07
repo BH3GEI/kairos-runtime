@@ -1,4 +1,5 @@
-import type { LocalModel, LocalModelCompleteInput, LocalModelCompleteOutput } from "./types";
+import type { LLMMessage } from "../../types/message";
+import type { CloudModel, CloudModelCompleteInput, CloudModelCompleteOutput } from "./types";
 
 export interface CreateOpenAICloudModelOptions {
   apiKey?: string;
@@ -10,32 +11,24 @@ const DEFAULT_BASE_URL = "https://api.deepseek.com/v1";
 const DEFAULT_MODEL = "deepseek-chat";
 const MAX_RETRIES = 5;
 
-interface ChatMessage {
-  role: "user" | "assistant" | "system";
-  content: string;
-}
-
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string }; delta?: { content?: string } }>;
 }
 
 export function createOpenAICloudModel(
   options: CreateOpenAICloudModelOptions = {}
-): LocalModel {
+): CloudModel {
   const apiKey = options.apiKey ?? process.env.API_KEY;
   const baseURL = (options.baseURL ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
   const model = options.model ?? DEFAULT_MODEL;
 
   return {
-    async complete(input: LocalModelCompleteInput): Promise<LocalModelCompleteOutput> {
-      if (input.attachments?.length) {
-        throw new Error("Cloud model does not support attachments in this implementation yet.");
-      }
+    async complete(input: CloudModelCompleteInput): Promise<CloudModelCompleteOutput> {
       if (!apiKey) {
         throw new Error("API_KEY or options.apiKey is required for cloud model.");
       }
 
-      const messages: ChatMessage[] = [{ role: "user", content: input.prompt }];
+      const messages = input.messages.map(toChatMessage);
       let lastError: unknown = null;
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
         try {
@@ -75,5 +68,12 @@ export function createOpenAICloudModel(
         ? lastError
         : new Error("Cloud model request failed after retries.");
     },
+  };
+}
+
+function toChatMessage(message: LLMMessage): { role: "user" | "assistant" | "system"; content: string } {
+  return {
+    role: message.role,
+    content: message.content,
   };
 }

@@ -21,7 +21,8 @@ const MAX_GRPC_MESSAGE_BYTES = 16 * 1024 * 1024;
 const API_KEY = process.env.API_KEY ?? process.env.QWEN_API_KEY;
 const baseURL = process.env.BASE_URL ?? "https://coding.dashscope.aliyuncs.com/v1";
 // const model = process.env.MODEL ?? "qwen3-coder-next";
-const model = process.env.MODEL ?? "qwen3-max-2026-01-23"
+// const model = process.env.MODEL ?? "qwen3-max-2026-01-23"
+const model = process.env.MODEL ?? "kimi-k2.5";
 
 if (!API_KEY) {
   throw new Error("API_KEY (or QWEN_API_KEY) is required to start enclave server.");
@@ -29,10 +30,10 @@ if (!API_KEY) {
 
 const toolFactories: Record<string, () => any> = {
   fetch_webpage: createFetchWebpageTool,
-  // run_safe_bash: createRunSafeBashTool,
-  // read_file_safe: createReadFileSafeTool,
-  // write_file_safe: createWriteFileSafeTool,
-  // list_files_safe: createListFilesSafeTool,
+  run_safe_bash: createRunSafeBashTool,
+  read_file_safe: createReadFileSafeTool,
+  write_file_safe: createWriteFileSafeTool,
+  list_files_safe: createListFilesSafeTool,
 };
 
 function parseEnabledToolNames(): Set<string> {
@@ -141,7 +142,7 @@ const packageDefinition = protoLoader.loadSync(DEFAULT_PROTO_PATH, {
 });
 
 const loaded = grpc.loadPackageDefinition(packageDefinition) as {
-  memoh_lite?: {
+  kairos?: {
     enclave?: {
       v1?: {
         AgentEnclaveService?: {
@@ -152,7 +153,7 @@ const loaded = grpc.loadPackageDefinition(packageDefinition) as {
   };
 };
 
-const service = loaded.memoh_lite?.enclave?.v1?.AgentEnclaveService?.service;
+const service = loaded.kairos?.enclave?.v1?.AgentEnclaveService?.service;
 if (!service) {
   throw new Error("Failed to resolve AgentEnclaveService from proto.");
 }

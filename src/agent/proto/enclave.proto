@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package memoh_lite.enclave.v1;
+package kairos.enclave.v1;
 
 service AgentEnclaveService {
   rpc StreamReply(StreamReplyRequest) returns (stream StreamReplyEvent);

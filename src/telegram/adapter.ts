@@ -10,11 +10,20 @@ const DEFAULT_PLACEHOLDER = "小猫正在玩毛线球...";
 const DEFAULT_FINAL_TEXT = "(空内容)";
 const EDIT_RETRY_ATTEMPTS = 3;
 const EDIT_RETRY_DELAY_MS = 500;
+const MEDIA_GROUP_FLUSH_DELAY_MS = 250;
 
 export function createTelegramAdapter(token: string): TelegramAdapter {
   const bot = new Bot(token);
   const messages: TelegramMessage[] = [];
   const streams = new Map<number, StreamState>();
+  const pendingMediaGroups = new Map<
+    string,
+    {
+      ctx: Context;
+      photoCount: number;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   let nextStreamId = 1;
   const messageHandlers = new Set<
     (message: TelegramMessage) => void | Promise<void>
@@ -122,8 +131,71 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
     };
   };
 
+  const flushMediaGroup = (key: string) => {
+    const pending = pendingMediaGroups.get(key);
+    if (!pending) {
+      return;
+    }
+    pendingMediaGroups.delete(key);
+
+    const message = toTelegramMessage(pending.ctx, pending.photoCount);
+    if (!message) {
+      return;
+    }
+    dispatchMessage(message);
+  };
+
+  const queueMediaGroupMessage = (ctx: Context, mediaGroupId: string) => {
+    const chatId = ctx.chat?.id;
+    const message = ctx.message;
+    if (!chatId) {
+      return;
+    }
+    if (!message) {
+      return;
+    }
+    const key = `${chatId}:${mediaGroupId}`;
+    const hasPhoto = (message.photo?.length ?? 0) > 0;
+    const incomingContext =
+      "text" in message ? (message.text ?? "") : (message.caption ?? "");
+    const pending = pendingMediaGroups.get(key);
+
+    if (!pending) {
+      const timer = setTimeout(() => {
+        flushMediaGroup(key);
+      }, MEDIA_GROUP_FLUSH_DELAY_MS);
+      pendingMediaGroups.set(key, {
+        ctx,
+        photoCount: hasPhoto ? 1 : 0,
+        timer,
+      });
+      return;
+    }
+
+    clearTimeout(pending.timer);
+    pending.photoCount += hasPhoto ? 1 : 0;
+    const pendingMessage = pending.ctx.message;
+    const pendingContext = pendingMessage
+      ? ("text" in pendingMessage
+          ? (pendingMessage.text ?? "")
+          : (pendingMessage.caption ?? ""))
+      : "";
+    if (incomingContext && !pendingContext) {
+      pending.ctx = ctx;
+    }
+    pending.timer = setTimeout(() => {
+      flushMediaGroup(key);
+    }, MEDIA_GROUP_FLUSH_DELAY_MS);
+  };
+
   bot.on("message", async (ctx, next) => {
-    // console.log("message arrived", ctx.msg.text);
+    const mediaGroupId = ctx.message?.media_group_id;
+    if (mediaGroupId) {
+      queueMediaGroupMessage(ctx, mediaGroupId);
+      await next();
+      return;
+    }
+
     const message = toTelegramMessage(ctx);
     if (!message) {
       return;
@@ -139,6 +211,10 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
       await bot.start();
     },
     stop: () => {
+      for (const pending of pendingMediaGroups.values()) {
+        clearTimeout(pending.timer);
+      }
+      pendingMediaGroups.clear();
       bot.stop();
     },
     getMessages: () => [...messages],
@@ -150,7 +226,7 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
   };
 }
 
-function toTelegramMessage(ctx: Context): TelegramMessage | null {
+function toTelegramMessage(ctx: Context, photoCountOverride?: number): TelegramMessage | null {
   const chat = ctx.chat;
   const message = ctx.message;
   if (!chat || !message) {
@@ -159,7 +235,10 @@ function toTelegramMessage(ctx: Context): TelegramMessage | null {
 
   const context = "text" in message ? (message.text ?? "") : (message.caption ?? "");
   const stickerEmoji = message.sticker?.emoji ?? "";
-  const photoPlaceholder = message.photo?.map((photo) => photo.file_id ? "[photo]" : "").join(",") ?? "";
+  const photoCount = photoCountOverride ?? ((message.photo?.length ?? 0) > 0 ? 1 : 0);
+  const photoPlaceholder =
+    photoCount <= 0 ? "" : photoCount === 1 ? "[photo]" : `[photo x${photoCount}]`;
+
   return {
     userId: message.from?.id?.toString() ?? "unknown",
     messageId: message.message_id,

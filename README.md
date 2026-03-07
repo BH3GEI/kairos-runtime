@@ -36,7 +36,7 @@ Sessions are organized in three layers:
 |-------|-------|----------|
 | L0 | Active | In-memory |
 | L1 | Inactive | In-memory |
-| L2 | Archived | Persistent store (OpenViking) |
+| L2 | Archived | Persistent store (OpenViking alike VFS) |
 
 A session activates when one of its messages receives a reply. Layers promote and demote via LRU. When no in-memory session matches an incoming message, the runtime fetches from L2 — a page fault, in OS terms.
 
@@ -70,7 +70,7 @@ This project is in early development. The memory layer (L0/L1) is the most compl
 | Component | Status |
 |-----------|--------|
 | L0/L1 session clustering | ✅ Implemented |
-| L2 archival (OpenViking) | 🚧 In progress |
+| L2 archival (OpenViking alike VFS) | 🚧 In progress |
 | containerd sandbox | 🚧 In progress |
 | CRIU checkpoint/rollback | ⚠️ Experimental(In progress) |
 | evolute (self-writing tools) | ⚠️ Experimental(Implemented) |
