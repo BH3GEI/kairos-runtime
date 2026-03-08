@@ -390,10 +390,11 @@ async function downgradeExpiredSessions(
       downgradeSessionStatus(session);
       if (session.status === "L3_ARCHIVED") {
         void archiveSession(ccb, session, archiverService);
-        // ccb.sessionControlBlocks.delete(session.sessionId);
-        // for (const messageId of session.messageIds) {
-        //   ccb.messageNodes.delete(messageId);
-        // }
+        ccb.sessionControlBlocks.delete(session.sessionId);
+        for (const messageId of session.messageIds) {
+          ccb.messageNodes.delete(messageId);
+          // TODO：需要把 archivedMessage 的 id 和 sessionId 关联起来，以便 reply 召回。
+        }
       }
     }
   }
