@@ -1,0 +1,11 @@
+{
+  "name": "@kairos-runtime/enclave-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "MEMORY_FILES_ROOT=${MEMORY_FILES_ROOT:-../.runtime/memory_files} EVOLUTIONS_ROOT=${EVOLUTIONS_ROOT:-../.runtime/evolutions} bun run --watch ./main.ts"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  }
+}

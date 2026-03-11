@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { createDenseEmbedder } from "./model/embedding";
+import { createDenseEmbedder } from "./state-daemon/model/embedding";
 
 function cosine(vecA: number[], vecB: number[]): number {
   const dot = vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);

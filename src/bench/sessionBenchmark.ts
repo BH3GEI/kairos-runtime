@@ -6,12 +6,12 @@
  * Optional: BENCH_PARQUET=/path/to/train.parquet (default: irc_disentangle/ubuntu/train-00000-of-00001.parquet)
  */
 import { join } from "node:path";
-import { createInMemoryContextStore } from "../gateway/context";
+import { createInMemoryContextStore } from "../state-daemon/gateway/context";
 import { loadUbuntuTrainParquet } from "./ubuntuDataset";
 import { loadDramaticBenchmark } from "./dramaticDataset";
 import { pairwiseF1 } from "./pairwiseF1";
-import { createOllamaDenseEmbedder } from "../model/embedding"; 
-import { createOllamaLocalModel, createOpenAICloudModel } from "../model/llm";
+import { createOllamaDenseEmbedder } from "../state-daemon/model/embedding"; 
+import { createOllamaLocalModel, createOpenAICloudModel } from "../state-daemon/model/llm";
 
 const DEFAULT_PARQUET = join(
   process.cwd(),

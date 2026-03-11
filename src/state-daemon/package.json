@@ -1,0 +1,8 @@
+{
+  "name": "@kairos-runtime/state-daemon",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "AGENT_ENCLAVE_TARGET=unix:///tmp/kairos-runtime-enclave.sock MEMORY_FILES_ROOT=${MEMORY_FILES_ROOT:-../.runtime/memory_files} bun run --watch ./main.ts"
+  }
+}

@@ -3,7 +3,7 @@
  * Parquet columns: id, raw, connections, date, ascii?, tokenized?
  */
 import { parquetReadObjects } from "hyparquet";
-import type { TelegramMessage } from "../types/message";
+import type { TelegramMessage } from "../state-daemon/types/message";
 import { open, stat, writeFile } from "fs/promises";
 import { dirname, join } from "node:path";
 
