@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { quote } from "./utils";
 
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
+// from src/state-daemon/gateway/context/prompt, ../../../../ = src/
 const SHARED_MEMORY_DIR = resolve(CURRENT_DIR, "../../../../.runtime/memory_files");
 
 function resolveMemoryDir(): string {
