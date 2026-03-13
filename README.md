@@ -129,6 +129,35 @@ your host libc is compatible with container runtime.
 docker compose up --build app
 ```
 
+### Common UDS troubleshooting (`state-daemon` -> `enclave-runtime`):
+
+- Symptom: socket file exists but client still fails (`ENOENT`, `EACCES`, or `UNAVAILABLE`).
+- Check target consistency first:
+  - `state-daemon` target (`AGENT_ENCLAVE_TARGET`)
+  - sandbox listen addr (`ENCLAVE_LISTEN`)
+- Verify socket visibility and permissions on host:
+
+```bash
+ls -l /tmp/kairos-runtime-enclave.sock
+lsof -U /tmp/kairos-runtime-enclave.sock
+```
+
+- In containerd sandbox mode, enclave may create the UDS as `root`; host non-root clients can fail to connect if permissions are too strict.
+- Current runtime sets socket mode to `666` after bind to avoid host/client user mismatch.
+
+### Run sandboxd on host (without Docker)
+
+```bash
+bash scripts/run-sandbox-host.sh --dry-run
+# or:
+bash scripts/run-sandbox-host.sh --release
+
+# at another terminal, run:
+OLLAMA_BASE_URL="http://127.0.0.1:11434" bun run src/state-daemon/dev
+# at another terminal, run:
+cargo run --manifest-path src/vfs/Cargo.toml
+```
+
 Run `sandboxd` in Docker as well:
 
 ```bash

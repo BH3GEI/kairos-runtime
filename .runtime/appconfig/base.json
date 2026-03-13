@@ -31,7 +31,7 @@
       "model": {
         "llm": {
           "ollama": {
-            "baseUrl": "http://host.docker.internal:11434",
+            "baseUrl": "${ENV:OLLAMA_BASE_URL}",
             "model": "qwen3.5:0.8b"
           },
           "cloud": {
@@ -42,7 +42,7 @@
         },
         "embedding": {
           "provider": "ollama",
-          "ollamaBaseUrl": "http://host.docker.internal:11434",
+          "ollamaBaseUrl": "${ENV:OLLAMA_BASE_URL}",
           "ollamaModel": "qwen3-embedding:0.6b"
         }
       }

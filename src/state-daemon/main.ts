@@ -32,6 +32,8 @@ const enclaveClient = createGrpcEnclaveClient({
   target: AGENT_ENCLAVE_TARGET,
 });
 
+console.log(`[state-daemon] AGENT_ENCLAVE_TARGET=${AGENT_ENCLAVE_TARGET}`);
+
 process.on("SIGHUP", () => {});
 
 const userRoles = createUserRolesStore();
