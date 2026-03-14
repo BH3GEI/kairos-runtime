@@ -1,9 +1,23 @@
-# [Project Name]
+<div align="center">
+  <img src="./assets/logo.png" alt="Memoh" width="100" height="100">
+  <h1>Kairos-Runtime</h1>
+  <p>An agent runtime that treats context, execution, and permissions as OS primitives — not LLM problems.</p>
+  <div align="center">
+    <img src="https://img.shields.io/github/package-json/v/tommy0103/kairos-runtime" alt="Version" />
+    <img src="https://img.shields.io/github/license/tommy0103/kairos-runtime" alt="License" />
+    <img src="https://img.shields.io/github/stars/tommy0103/kairos-runtime?style=social" alt="Stars" />
+    <img src="https://img.shields.io/github/forks/tommy0103/kairos-runtime?style=social" alt="Forks" />
+    <img src="https://img.shields.io/github/last-commit/tommy0103/kairos-runtime" alt="Last Commit" />
+    <img src="https://img.shields.io/github/issues/tommy0103/kairos-runtime" alt="Issues" />
+  </div>
+  <hr>
+</div>
 
-> An agent runtime that treats context, execution, and permissions as OS primitives — not LLM problems.
 
 > Like light — particle and wave, yet neither classical.  
 > OS primitives. Agent-centered. Neither, in the classical sense.
+
+## A short story
 
 My friend's framework was querying 100k tokens per request. Every message. Every time. I thought there had to be a better way.
 
