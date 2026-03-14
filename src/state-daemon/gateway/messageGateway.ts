@@ -17,6 +17,7 @@ export interface CreateMessageGatewayOptions {
   policies: GatewayTriggerPolicy[];
   userRoles?: UserRolesStore;
   mergeWindowMs?: number;
+  enableEditedMessageTrigger?: boolean;
 }
 
 export interface MessageGateway {
@@ -147,9 +148,13 @@ export function createMessageGateway(
       console.error("message gateway handler failed:", error);
     });
   });
+  const enableEditedTrigger = options.enableEditedMessageTrigger !== false;
   const unsubscribeEdited = options.telegram.onEditedMessage((editedMessage) => {
     normalizer.ingestEditedMessage(editedMessage);
 
+    if (!enableEditedTrigger) {
+      return;
+    }
     if (triggeredMessageIds.has(editedMessage.messageId)) {
       return;
     }
