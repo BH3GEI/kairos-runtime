@@ -260,7 +260,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         if (lastUserIdx >= 0) {
           messages = messages.map((m, i) =>
             i === lastUserIdx
-              ? { ...m, content: m.content.replace(/\[photo\]/g, `[图片内容: ${description}]`) }
+              ? { ...m, content: m.content.replace(/\[photo(?:\s*x\d+)?\]/g, `[图片内容: ${description}]`) }
               : m
           );
         }
