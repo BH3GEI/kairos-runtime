@@ -22,6 +22,7 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
     {
       ctx: Context;
       photoCount: number;
+      photoFileIds: string[];
       timer: ReturnType<typeof setTimeout>;
     }
   >();
@@ -158,7 +159,7 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
     };
   };
 
-  const flushMediaGroup = (key: string) => {
+  const flushMediaGroup = async (key: string) => {
     const pending = pendingMediaGroups.get(key);
     if (!pending) {
       return;
@@ -169,6 +170,7 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
     if (!message) {
       return;
     }
+    message.imageUrls = await resolvePhotoUrlsByFileIds(pending.photoFileIds, bot, token);
     dispatchMessage(message);
   };
 
@@ -182,7 +184,9 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
       return;
     }
     const key = `${chatId}:${mediaGroupId}`;
-    const hasPhoto = (message.photo?.length ?? 0) > 0;
+    const photos = message.photo;
+    const hasPhoto = (photos?.length ?? 0) > 0;
+    const largestFileId = hasPhoto ? photos![photos!.length - 1].file_id : undefined;
     const incomingContext =
       "text" in message ? (message.text ?? "") : (message.caption ?? "");
     const pending = pendingMediaGroups.get(key);
@@ -194,6 +198,7 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
       pendingMediaGroups.set(key, {
         ctx,
         photoCount: hasPhoto ? 1 : 0,
+        photoFileIds: largestFileId ? [largestFileId] : [],
         timer,
       });
       return;
@@ -201,6 +206,9 @@ export function createTelegramAdapter(token: string): TelegramAdapter {
 
     clearTimeout(pending.timer);
     pending.photoCount += hasPhoto ? 1 : 0;
+    if (largestFileId) {
+      pending.photoFileIds.push(largestFileId);
+    }
     const pendingMessage = pending.ctx.message;
     const pendingContext = pendingMessage
       ? ("text" in pendingMessage
@@ -530,15 +538,25 @@ async function resolvePhotoUrls(
     return [];
   }
   const largest = photos[photos.length - 1];
-  try {
-    const file = await bot.api.getFile(largest.file_id);
-    if (!file.file_path) {
-      return [];
+  return resolvePhotoUrlsByFileIds([largest.file_id], bot, token);
+}
+
+async function resolvePhotoUrlsByFileIds(
+  fileIds: string[],
+  bot: Bot,
+  token: string
+): Promise<string[]> {
+  const urls: string[] = [];
+  for (const fileId of fileIds) {
+    try {
+      const file = await bot.api.getFile(fileId);
+      if (file.file_path) {
+        urls.push(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+      }
+    } catch (error) {
+      console.error("resolvePhotoUrl failed for fileId:", fileId, error);
     }
-    return [`https://api.telegram.org/file/bot${token}/${file.file_path}`];
-  } catch (error) {
-    console.error("resolvePhotoUrls failed:", error);
-    return [];
   }
+  return urls;
 }
 

@@ -11,9 +11,9 @@
         "protoPath": ".runtime/proto/enclave-runtime/enclave.proto"
       },
       "llm": {
-        "apiKey": "${ENV:ENCLAVE_API_KEY}",
-        "baseURL": "https://coding.dashscope.aliyuncs.com/v1",
-        "model": "kimi-k2.5"
+        "apiKey": "${ENV:ENCLAVE_API_KEY:-ollama}",
+        "baseURL": "${ENV:ENCLAVE_BASE_URL:-http://127.0.0.1:11434/v1}",
+        "model": "${ENV:ENCLAVE_MODEL:-qwen3.5:397b-cloud}"
       },
       "tools": {
         "enabled": "all"
@@ -39,9 +39,9 @@
             "model": "qwen3.5:0.8b"
           },
           "cloud": {
-            "apiKey": "${ENV:CLOUD_API_KEY}",
-            "baseURL": "https://ark.cn-beijing.volces.com/api/v3",
-            "model": "doubao-seed-2-0-lite-260215"
+            "apiKey": "${ENV:CLOUD_API_KEY:-ollama}",
+            "baseURL": "${ENV:CLOUD_BASE_URL:-http://127.0.0.1:11434/v1}",
+            "model": "${ENV:CLOUD_MODEL:-qwen3.5:397b-cloud}"
           }
         },
         "embedding": {
