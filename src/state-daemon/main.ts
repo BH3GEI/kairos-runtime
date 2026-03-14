@@ -2,6 +2,7 @@ import {
   createClientRuntime,
   createMentionMeTriggerPolicy,
   createMessageGateway,
+  createPrivateChatTriggerPolicy,
   createReplyToMeTriggerPolicy,
 } from "./gateway";
 import { loadStateDaemonConfig } from "@kairos-runtime/app-config";
@@ -50,7 +51,11 @@ const runtime = createClientRuntime({
 const gateway = createMessageGateway({
   telegram,
   runtime,
-  policies: [createReplyToMeTriggerPolicy(), createMentionMeTriggerPolicy()],
+  policies: [
+    createReplyToMeTriggerPolicy(),
+    createMentionMeTriggerPolicy(),
+    createPrivateChatTriggerPolicy(),
+  ],
   userRoles,
 });
 
