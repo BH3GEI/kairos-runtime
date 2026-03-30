@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import type { LLMMessage } from "./agent/core/openai";
 import type { AgentLoopStreamEvent } from "./agent/core/loopRunner";
 import { createOpenAIEnclaveRuntime } from "./agent/core/openai";
-import { createFetchWebpageTool, createListFilesSafeTool, createReadFileSafeTool, createRunSafeBashTool, createWriteFileSafeTool } from "./agent/tools";
+import { createFetchWebpageTool } from "./agent/tools";
+import { logosPrimitiveTools, initLogosSession } from "./agent/tools/logosPrimitives";
 
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_ROOT = resolve(CURRENT_DIR, "../..");
@@ -43,40 +44,14 @@ process.env.ENABLED_TOOLS ??= config.tools.enabled;
 //   createWriteFileSafeTool,
 // } = await import("./agent/tools");
 
-const toolFactories: Record<string, () => any> = {
-  fetch_webpage: createFetchWebpageTool,
-  run_safe_bash: createRunSafeBashTool,
-  read_file_safe: createReadFileSafeTool,
-  write_file_safe: createWriteFileSafeTool,
-  list_files_safe: createListFilesSafeTool,
-};
-
-function parseEnabledToolNames(): Set<string> {
-  const raw = config.tools.enabled?.trim();
-  if (!raw) {
-    throw new Error("enclaveRuntime.tools.enabled is required and cannot be empty.");
-  }
-  if (raw.toLowerCase() === "all") {
-    return new Set(Object.keys(toolFactories));
-  }
-  const names = raw
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
-  return new Set(names);
-}
-
-function buildEnabledTools(enabledToolNames: Set<string>) {
-  return Array.from(enabledToolNames)
-    .map((name) => {
-      const factory = toolFactories[name];
-      if (!factory) {
-        console.warn(`[enclave] unknown tool skipped: ${name}`);
-        return null;
-      }
-      return factory();
-    })
-    .filter((tool): tool is NonNullable<typeof tool> => Boolean(tool));
+// Logos-native: tools are the 5 logos primitives + fetch_webpage + evolute/apoptosis.
+// Old file-based tools (readFileSafe, writeFileSafe, runSafeBash, listFilesSafe) are removed.
+function buildTools() {
+  const tools: any[] = [...logosPrimitiveTools];
+  try {
+    tools.push(createFetchWebpageTool());
+  } catch {}
+  return tools;
 }
 
 interface GrpcStreamReplyRequest {
@@ -144,12 +119,11 @@ function safeSerializeResult(result: unknown): string {
   }
 }
 
-const enabledToolNames = parseEnabledToolNames();
 const enclaveRuntime = createOpenAIEnclaveRuntime({
   apiKey: API_KEY,
   model,
   baseURL,
-  tools: buildEnabledTools(enabledToolNames),
+  tools: buildTools(),
 });
 
 const packageDefinition = protoLoader.loadSync(DEFAULT_PROTO_PATH, {

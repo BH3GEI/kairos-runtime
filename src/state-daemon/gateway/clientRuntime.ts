@@ -1,18 +1,17 @@
-import { appendFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
-import { inspect } from "node:util";
+/**
+ * ClientRuntime — logos-native version.
+ *
+ * Messages go to logos kernel. Context comes from logos kernel.
+ * Session clustering is done by kairos (decider), not logos default.
+ * LLM loop runs in enclave, tools are logos 5 primitives.
+ */
+
 import type { TelegramMessage } from "../types/message";
 import { RemoteAsyncIterable } from "../types/remoteAsyncIterable";
 import type { AgentEnclaveClient } from "../enclave/protocol";
-import {
-  createContextAssembler,
-  createInMemoryContextStore,
-  type ContextAssembler,
-  type ContextStore,
-} from "./context";
-import { createOllamaLocalModel, createOpenAICloudModel } from "../model/llm";
-import { createDenseEmbedder } from "../model/embedding";
-import { system } from "./context";
+import { MemoryVfsClient } from "../storage/vfs/client";
+import { system } from "./context/prompt";
+import crypto from "node:crypto";
 
 export interface ClientRuntime {
   recordMessage: (message: TelegramMessage) => Promise<void>;
@@ -24,95 +23,68 @@ export interface ClientRuntime {
 
 export interface CreateClientRuntimeOptions {
   enclaveClient?: AgentEnclaveClient;
-  contextStore?: ContextStore;
-  contextAssembler?: ContextAssembler;
-  modelConfig?: {
-    llm?: {
-      ollama?: {
-        baseUrl?: string;
-        model?: string;
-      };
-      cloud?: {
-        apiKey?: string;
-        baseURL?: string;
-        model?: string;
-      };
-    };
-    embedding?: {
-      provider?: "ollama" | "native";
-      ollamaBaseUrl?: string;
-      ollamaModel?: string;
-    };
-  };
+  vfsClient?: MemoryVfsClient;
 }
 
-const SESSION_DEBUG_LOG_PATH = join(
-  process.cwd(),
-  ".memoh-debug",
-  "session-control-blocks.log"
-);
-
 export function createClientRuntime(options: CreateClientRuntimeOptions): ClientRuntime {
-  const enclaveClient =
-    options.enclaveClient;
+  const enclaveClient = options.enclaveClient;
   if (!enclaveClient) {
-    throw new Error("createClientRuntime requires either agent or enclaveClient.");
+    throw new Error("createClientRuntime requires enclaveClient.");
   }
 
-  const contextStore =
-    options.contextStore ?? createInMemoryContextStore({
-      embedder: createDenseEmbedder({
-        provider: options.modelConfig?.embedding?.provider,
-        ollamaBaseUrl: options.modelConfig?.embedding?.ollamaBaseUrl,
-        ollamaModel: options.modelConfig?.embedding?.ollamaModel,
-      }),
-      localModel: createOllamaLocalModel({
-        baseUrl: options.modelConfig?.llm?.ollama?.baseUrl,
-        model: options.modelConfig?.llm?.ollama?.model,
-      }),
-      cloudModel: createOpenAICloudModel({
-        apiKey: options.modelConfig?.llm?.cloud?.apiKey,
-        baseURL: options.modelConfig?.llm?.cloud?.baseURL,
-        model: options.modelConfig?.llm?.cloud?.model,
-      }),
-    });
-  const contextAssembler = options.contextAssembler ?? createContextAssembler();
+  const vfs = options.vfsClient ?? new MemoryVfsClient();
 
   const recordMessage: ClientRuntime["recordMessage"] = async (message) => {
-    await contextStore.ingestMessage({ message });
-    const lines: string[] = [];
-    contextStore.debugPrintSessionControlBlocks({
-      chatId: message.chatId,
-      log: (...args: unknown[]) => {
-        lines.push(args.map((arg) => inspect(arg, { depth: null, compact: true })).join(" "));
-      },
-    });
-    if (lines.length > 0) {
-      await mkdir(join(process.cwd(), ".memoh-debug"), { recursive: true });
-      const stamp = new Date().toISOString();
-      const header = `\n[${stamp}] chatId=${message.chatId} messageId=${message.messageId}\n`;
-      await appendFile(SESSION_DEBUG_LOG_PATH, `${header}${lines.join("\n")}\n`, "utf8");
+    // Write message to logos memory — kernel handles session clustering
+    try {
+      await vfs.write({
+        path: `logos://memory/groups/${message.chatId}/messages`,
+        content: JSON.stringify({
+          msg_id: message.messageId,
+          chat_id: message.chatId,
+          speaker: message.userId?.toString() ?? message.senderName ?? "unknown",
+          text: message.text,
+          reply_to: message.replyToMessageId ?? null,
+          ts: new Date(message.timestamp * 1000).toISOString(),
+          mentions: JSON.stringify(message.mentions ?? []),
+        }),
+      });
+    } catch (error) {
+      console.error(`[clientRuntime] failed to record message ${message.messageId}:`, error);
     }
   };
 
   const streamReply: ClientRuntime["streamReply"] = ({ triggerMessage, prompt }) => {
     const stream = new RemoteAsyncIterable<string>();
-    const [recentMessages, sessionMessages] = contextStore.getContextByAnchor({
-      chatId: triggerMessage.chatId,
-      messageId: triggerMessage.messageId,
-    });
-    const llmMessages = contextAssembler.build({
-      contextMessages: sessionMessages,
-      recentMessages,
-      triggerMessage,
-      systemPrompt: system(),
-    });
-    // console.log("llmMessages", llmMessages);
+    const taskId = `tg-${triggerMessage.chatId}-${Date.now()}`;
+
     void (async () => {
       try {
+        // 1. Register task + get context from logos
+        const senderUid = triggerMessage.userId?.toString() ?? "unknown";
+        let contextJson: any = {};
+        try {
+          const resp = await vfs.call({
+            tool: "system.get_context",
+            params: {
+              chat_id: triggerMessage.chatId.toString(),
+              sender_uid: senderUid,
+              msg_id: triggerMessage.messageId,
+            },
+          });
+          contextJson = typeof resp === "string" ? JSON.parse(resp) : resp;
+        } catch (e) {
+          console.error("[clientRuntime] get_context failed:", e);
+        }
+
+        // 2. Build LLM messages with logos context
+        const systemPrompt = buildSystemPrompt(contextJson);
+        const messages = buildLlmMessages(triggerMessage, prompt, contextJson);
+
+        // 3. Stream reply from enclave
         for await (const event of enclaveClient.streamReply({
           chatId: triggerMessage.chatId,
-          messages: llmMessages,
+          messages,
           imageUrls: triggerMessage.imageUrls,
         })) {
           if (event.type === "message_update" && event.role === "assistant" && event.delta) {
@@ -126,16 +98,64 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
             break;
           }
         }
+
         stream.end();
       } catch (error) {
         stream.fail(error);
       }
     })();
+
     return stream;
   };
 
-  return {
-    recordMessage,
-    streamReply,
-  };
+  return { recordMessage, streamReply };
+}
+
+function buildSystemPrompt(context: any): string {
+  let prompt = system();
+
+  // Inject session context if available
+  if (context.session) {
+    const msgs = context.session.messages ?? [];
+    if (msgs.length > 0) {
+      prompt += "\n\n## Current Session\n";
+      for (const m of msgs.slice(-20)) {
+        prompt += `[${m.speaker}]: ${m.text}\n`;
+      }
+    }
+  }
+
+  // Inject summary if available
+  if (context.recent_summary && context.recent_summary !== "null") {
+    const summary = typeof context.recent_summary === "string"
+      ? context.recent_summary
+      : JSON.stringify(context.recent_summary);
+    prompt += `\n\n## Recent Summary\n${summary}`;
+  }
+
+  return prompt;
+}
+
+function buildLlmMessages(
+  trigger: TelegramMessage,
+  prompt: string,
+  context: any,
+): Array<{ role: string; content: string }> {
+  const messages: Array<{ role: string; content: string }> = [];
+
+  // System prompt with context
+  messages.push({ role: "system", content: buildSystemPrompt(context) });
+
+  // Session messages as conversation history
+  if (context.session?.messages) {
+    for (const m of context.session.messages.slice(-10)) {
+      const role = m.speaker === "assistant" ? "assistant" : "user";
+      messages.push({ role, content: `[${m.speaker}]: ${m.text}` });
+    }
+  }
+
+  // Current trigger message
+  messages.push({ role: "user", content: prompt });
+
+  return messages;
 }

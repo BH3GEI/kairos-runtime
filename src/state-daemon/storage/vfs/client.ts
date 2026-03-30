@@ -131,6 +131,15 @@ export class MemoryVfsClient {
     return {};
   }
 
+  /** Call a logos proc tool (system.complete, system.get_context, memory.search, etc.) */
+  async call(request: { tool: string; params: Record<string, unknown> }): Promise<unknown> {
+    const resp = await this.logosClient.call(
+      { tool: request.tool, paramsJson: JSON.stringify(request.params) },
+      this.buildCallOptions()
+    );
+    return JSON.parse(resp.resultJson);
+  }
+
   async archive(request: ArchiveRequest): Promise<ArchiveResponse> {
     // --- [PRESERVED] Old direct RPC ---
     // return this.grpcClient.archive(request, this.buildCallOptions());
