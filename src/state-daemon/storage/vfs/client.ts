@@ -5,7 +5,8 @@
 // Consumers (archiver, searcher, store) see no change.
 
 import * as grpc from "@grpc/grpc-js";
-import { createChannel, createClient } from "nice-grpc";
+import crypto from "node:crypto";
+import { createChannel, createClient, Metadata } from "nice-grpc";
 import {
   LogosDefinition,
   type LogosClient as LogosGrpcClient,
@@ -50,10 +51,9 @@ export interface CreateMemoryVfsClientOptions {
 }
 
 export class MemoryVfsClient {
-  // --- [PRESERVED] Old gRPC client ---
-  // private readonly grpcClient: MemoryVFSGrpcClient;
   private readonly logosClient: LogosGrpcClient;
   private readonly timeoutMs?: number;
+  private sessionKey?: string;
 
   constructor(options: CreateMemoryVfsClientOptions = {}) {
     const rawTarget = options.target ?? getDefaultMemoryVfsTarget();
@@ -62,10 +62,20 @@ export class MemoryVfsClient {
       "grpc.max_send_message_length": MAX_GRPC_MESSAGE_BYTES,
       "grpc.max_receive_message_length": MAX_GRPC_MESSAGE_BYTES,
     });
-    // --- [PRESERVED] Old client ---
-    // this.grpcClient = createClient(MemoryVFSDefinition, channel);
     this.logosClient = createClient(LogosDefinition, channel);
     this.timeoutMs = options.timeoutMs;
+  }
+
+  /** Register token + handshake to get a session. Enables call/exec. */
+  async initSession(taskId: string, agentConfigId: string): Promise<void> {
+    const token = crypto.randomUUID();
+    await this.logosClient.registerToken({ token, taskId, role: "admin", agentConfigId });
+    const resp = await this.logosClient.handshake({ token }, {
+      onHeader: (header: any) => {
+        this.sessionKey = header?.get?.("x-logos-session")?.toString();
+      },
+    });
+    if (!resp.ok) throw new Error(`handshake failed: ${resp.error}`);
   }
 
   async search(request: SearchRequest): Promise<SearchResponse> {
@@ -189,13 +199,17 @@ export class MemoryVfsClient {
     return {};
   }
 
-  private buildCallOptions(): { signal?: AbortSignal } {
-    if (!this.timeoutMs || this.timeoutMs <= 0) {
-      return {};
+  private buildCallOptions(): any {
+    const opts: any = {};
+    if (this.timeoutMs && this.timeoutMs > 0) {
+      opts.signal = AbortSignal.timeout(this.timeoutMs);
     }
-    return {
-      signal: AbortSignal.timeout(this.timeoutMs),
-    };
+    if (this.sessionKey) {
+      const metadata = new Metadata();
+      metadata.set("x-logos-session", this.sessionKey);
+      opts.metadata = metadata;
+    }
+    return opts;
   }
 }
 

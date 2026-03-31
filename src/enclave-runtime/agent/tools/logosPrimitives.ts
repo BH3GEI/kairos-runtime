@@ -125,6 +125,48 @@ export const logosPatchTool: AgentTool<typeof logosPatchSchema> = {
   },
 };
 
+// --- Tool: logos_deploy_service ---
+
+const logosDeployServiceSchema = z.object({
+  name: z.string().describe("Service name (e.g. 'kokoro-tts')"),
+  compose_yaml: z.string().describe("compose.yaml content describing how to run the service"),
+  artifacts: z.record(z.string()).optional().describe("Map of filename → content for service artifacts"),
+  svc_type: z.enum(["oneshot", "daemon"]).default("daemon").describe("Service type"),
+  endpoint: z.string().optional().describe("Service endpoint URL (for daemons)"),
+});
+
+export const logosDeployServiceTool: AgentTool<typeof logosDeployServiceSchema> = {
+  name: "logos_deploy_service",
+  description: "Deploy a service to logos. Writes compose.yaml + artifacts to svc-store, then registers in services. The service persists across restarts.",
+  parameters: logosDeployServiceSchema,
+  execute: async ({ name, compose_yaml, artifacts, svc_type, endpoint }) => {
+    const client = getClient();
+    const m = meta();
+
+    // 1. Write compose.yaml to svc-store
+    await client.write({ uri: `logos://svc-store/${name}/compose.yaml`, content: compose_yaml }, m);
+
+    // 2. Write artifacts
+    if (artifacts) {
+      for (const [filename, content] of Object.entries(artifacts)) {
+        await client.write({ uri: `logos://svc-store/${name}/artifacts/${filename}`, content }, m);
+      }
+    }
+
+    // 3. Register in services
+    const serviceEntry = JSON.stringify({
+      name,
+      source: "agent",
+      svc_type: svc_type ?? "daemon",
+      endpoint: endpoint ?? "",
+      status: "registered",
+    });
+    await client.write({ uri: `logos://services/${name}`, content: serviceEntry }, m);
+
+    return `Service ${name} deployed to logos://svc-store/${name}/ and registered.`;
+  },
+};
+
 /** All logos primitive tools */
 export const logosPrimitiveTools = [
   logosReadTool,
@@ -132,4 +174,5 @@ export const logosPrimitiveTools = [
   logosExecTool,
   logosCallTool,
   logosPatchTool,
+  logosDeployServiceTool,
 ];

@@ -45,7 +45,6 @@ if (OWNER_USER_ID) {
 
 const runtime = createClientRuntime({
   enclaveClient,
-  modelConfig: config.model,
 });
 
 const policies = [

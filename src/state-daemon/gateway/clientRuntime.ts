@@ -1,17 +1,14 @@
 /**
  * ClientRuntime — logos-native version.
  *
- * Messages go to logos kernel. Context comes from logos kernel.
- * Session clustering is done by kairos (decider), not logos default.
- * LLM loop runs in enclave, tools are logos 5 primitives.
+ * All state goes through logos kernel. Session clustering by kernel.
+ * Persona read from logos://users/. Context from system.get_context.
  */
 
 import type { TelegramMessage } from "../types/message";
 import { RemoteAsyncIterable } from "../types/remoteAsyncIterable";
 import type { AgentEnclaveClient } from "../enclave/protocol";
 import { MemoryVfsClient } from "../storage/vfs/client";
-import { system } from "./context/prompt";
-import crypto from "node:crypto";
 
 export interface ClientRuntime {
   recordMessage: (message: TelegramMessage) => Promise<void>;
@@ -26,6 +23,8 @@ export interface CreateClientRuntimeOptions {
   vfsClient?: MemoryVfsClient;
 }
 
+const BOT_UID = "kairos-bot";
+
 export function createClientRuntime(options: CreateClientRuntimeOptions): ClientRuntime {
   const enclaveClient = options.enclaveClient;
   if (!enclaveClient) {
@@ -34,15 +33,31 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
 
   const vfs = options.vfsClient ?? new MemoryVfsClient();
 
+  // Init session in background so call() works
+  let sessionReady = false;
+  const taskId = `daemon-${Date.now()}`;
+  vfs.initSession(taskId, "kairos-daemon").then(() => {
+    sessionReady = true;
+    console.log("[clientRuntime] logos session ready");
+    // Create daemon task in system
+    vfs.write({
+      path: "logos://system/tasks",
+      content: JSON.stringify({
+        task_id: taskId, description: "kairos daemon", chat_id: "", trigger: "daemon",
+      }),
+    }).catch(() => {});
+  }).catch(e => {
+    console.error("[clientRuntime] logos session failed:", e);
+  });
+
   const recordMessage: ClientRuntime["recordMessage"] = async (message) => {
-    // Write message to logos memory — kernel handles session clustering
     try {
       await vfs.write({
         path: `logos://memory/groups/${message.chatId}/messages`,
         content: JSON.stringify({
           msg_id: message.messageId,
-          chat_id: message.chatId,
-          speaker: message.userId?.toString() ?? message.senderName ?? "unknown",
+          chat_id: String(message.chatId),
+          speaker: message.senderName ?? message.userId?.toString() ?? "unknown",
           text: message.text,
           reply_to: message.replyToMessageId ?? null,
           ts: new Date(message.timestamp * 1000).toISOString(),
@@ -50,38 +65,58 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
         }),
       });
     } catch (error) {
-      console.error(`[clientRuntime] failed to record message ${message.messageId}:`, error);
+      console.error(`[clientRuntime] record message failed:`, error);
     }
   };
 
   const streamReply: ClientRuntime["streamReply"] = ({ triggerMessage, prompt }) => {
     const stream = new RemoteAsyncIterable<string>();
-    const taskId = `tg-${triggerMessage.chatId}-${Date.now()}`;
 
     void (async () => {
       try {
-        // 1. Register task + get context from logos
-        const senderUid = triggerMessage.userId?.toString() ?? "unknown";
+        // 1. Get context from logos (session + summary + persona paths)
         let contextJson: any = {};
-        try {
-          const resp = await vfs.call({
-            tool: "system.get_context",
-            params: {
-              chat_id: triggerMessage.chatId.toString(),
-              sender_uid: senderUid,
-              msg_id: triggerMessage.messageId,
-            },
-          });
-          contextJson = typeof resp === "string" ? JSON.parse(resp) : resp;
-        } catch (e) {
-          console.error("[clientRuntime] get_context failed:", e);
+        if (sessionReady) {
+          try {
+            const resp = await vfs.call({
+              tool: "system.get_context",
+              params: {
+                chat_id: String(triggerMessage.chatId),
+                sender_uid: triggerMessage.userId?.toString() ?? "unknown",
+                msg_id: triggerMessage.messageId,
+              },
+            });
+            contextJson = typeof resp === "string" ? JSON.parse(resp) : resp;
+          } catch (e) {
+            console.error("[clientRuntime] get_context failed:", e);
+          }
         }
 
-        // 2. Build LLM messages with logos context
-        const systemPrompt = buildSystemPrompt(contextJson);
-        const messages = buildLlmMessages(triggerMessage, prompt, contextJson);
+        // 2. Read persona from logos
+        let personaLong = "";
+        let personaMid = "";
+        if (contextJson.persona_paths) {
+          try {
+            const r = await vfs.read({ path: contextJson.persona_paths.long });
+            personaLong = r.content || "";
+          } catch {}
+          try {
+            const r = await vfs.read({ path: contextJson.persona_paths.mid });
+            personaMid = r.content || "";
+          } catch {}
+        }
+        // Also read bot's own persona
+        let botPersona = "";
+        try {
+          const r = await vfs.read({ path: `logos://users/${BOT_UID}/persona/long.md` });
+          botPersona = r.content || "";
+        } catch {}
 
-        // 3. Stream reply from enclave
+        // 3. Build system prompt with logos context
+        const systemPrompt = buildSystemPrompt(contextJson, botPersona, personaLong, personaMid);
+        const messages = buildLlmMessages(triggerMessage, prompt, contextJson, systemPrompt);
+
+        // 4. Stream from enclave
         for await (const event of enclaveClient.streamReply({
           chatId: triggerMessage.chatId,
           messages,
@@ -89,12 +124,9 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
         })) {
           if (event.type === "message_update" && event.role === "assistant" && event.delta) {
             stream.push(event.delta);
-            continue;
-          }
-          if (event.type === "failed") {
+          } else if (event.type === "failed") {
             throw new Error(event.error);
-          }
-          if (event.type === "completed") {
+          } else if (event.type === "completed") {
             break;
           }
         }
@@ -111,26 +143,42 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
   return { recordMessage, streamReply };
 }
 
-function buildSystemPrompt(context: any): string {
-  let prompt = system();
+function buildSystemPrompt(
+  context: any,
+  botPersona: string,
+  senderPersonaLong: string,
+  senderPersonaMid: string,
+): string {
+  let prompt = `You are an AI agent running on the Logos kernel. All your capabilities come from 5 primitives: read, write, patch, exec, call.
 
-  // Inject session context if available
-  if (context.session) {
-    const msgs = context.session.messages ?? [];
-    if (msgs.length > 0) {
-      prompt += "\n\n## Current Session\n";
-      for (const m of msgs.slice(-20)) {
-        prompt += `[${m.speaker}]: ${m.text}\n`;
-      }
+Current time: ${new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })}`;
+
+  if (botPersona) {
+    prompt += `\n\n## Your Persona\n${botPersona}`;
+  }
+
+  if (senderPersonaLong || senderPersonaMid) {
+    prompt += `\n\n## About the sender`;
+    if (senderPersonaLong) prompt += `\n${senderPersonaLong}`;
+    if (senderPersonaMid) prompt += `\n\nRecent: ${senderPersonaMid}`;
+  }
+
+  // Session context
+  if (context.session?.messages?.length > 0) {
+    prompt += "\n\n## Current Session\n";
+    for (const m of context.session.messages.slice(-15)) {
+      prompt += `[${m.speaker}]: ${m.text}\n`;
     }
   }
 
-  // Inject summary if available
+  // Recent summary
   if (context.recent_summary && context.recent_summary !== "null") {
     const summary = typeof context.recent_summary === "string"
       ? context.recent_summary
       : JSON.stringify(context.recent_summary);
-    prompt += `\n\n## Recent Summary\n${summary}`;
+    if (summary && summary !== "null") {
+      prompt += `\n\n## Recent Summary\n${summary}`;
+    }
   }
 
   return prompt;
@@ -140,22 +188,19 @@ function buildLlmMessages(
   trigger: TelegramMessage,
   prompt: string,
   context: any,
+  systemPrompt: string,
 ): Array<{ role: string; content: string }> {
   const messages: Array<{ role: string; content: string }> = [];
+  messages.push({ role: "system", content: systemPrompt });
 
-  // System prompt with context
-  messages.push({ role: "system", content: buildSystemPrompt(context) });
-
-  // Session messages as conversation history
+  // Inject recent session as conversation history
   if (context.session?.messages) {
     for (const m of context.session.messages.slice(-10)) {
       const role = m.speaker === "assistant" ? "assistant" : "user";
-      messages.push({ role, content: `[${m.speaker}]: ${m.text}` });
+      messages.push({ role, content: m.text });
     }
   }
 
-  // Current trigger message
   messages.push({ role: "user", content: prompt });
-
   return messages;
 }
