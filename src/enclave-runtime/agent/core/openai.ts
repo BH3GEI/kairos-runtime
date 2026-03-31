@@ -148,10 +148,11 @@ function createAgentCore(options: CreateOpenAIAgentOptions): AgentCore {
     loopRunner.applyToolsToActiveLoops();
     toolsDocWriter.sync(toolsRegistry.getCurrentTools());
   };
-  const evoluteTool = createEvoluteTool();
-  const apoptosisTool = createApoptosisTool();
-  toolsRegistry.registerStaticTool(evoluteTool);
-  toolsRegistry.registerStaticTool(apoptosisTool);
+  // evolute/apoptosis disabled — service deployment goes through logos://svc-store/ now
+  // const evoluteTool = createEvoluteTool();
+  // const apoptosisTool = createApoptosisTool();
+  // toolsRegistry.registerStaticTool(evoluteTool);
+  // toolsRegistry.registerStaticTool(apoptosisTool);
   const unregisterTool = async (name: string): Promise<boolean> => {
     const deleted = toolsRegistry.unregisterTool(name);
     if (deleted) {
@@ -188,7 +189,7 @@ function createAgentCore(options: CreateOpenAIAgentOptions): AgentCore {
   })();
 
   const replaceTools = async (tools: AgentTool<any>[]) => {
-    toolsRegistry.replaceStaticTools([...tools, evoluteTool, apoptosisTool]);
+    toolsRegistry.replaceStaticTools([...tools]);
     loopRunner.applyToolsToActiveLoops();
     toolsDocWriter.sync(toolsRegistry.getCurrentTools());
   };

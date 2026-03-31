@@ -1,18 +1,14 @@
-import { appendFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
-import { inspect } from "node:util";
+/**
+ * ClientRuntime — logos-native version.
+ *
+ * All state goes through logos kernel. Session clustering by kernel.
+ * Persona read from logos://users/. Context from system.get_context.
+ */
+
 import type { TelegramMessage } from "../types/message";
 import { RemoteAsyncIterable } from "../types/remoteAsyncIterable";
 import type { AgentEnclaveClient } from "../enclave/protocol";
-import {
-  createContextAssembler,
-  createInMemoryContextStore,
-  type ContextAssembler,
-  type ContextStore,
-} from "./context";
-import { createOllamaLocalModel, createOpenAICloudModel } from "../model/llm";
-import { createDenseEmbedder } from "../model/embedding";
-import { system } from "./context";
+import { MemoryVfsClient } from "../storage/vfs/client";
 
 export interface ClientRuntime {
   recordMessage: (message: TelegramMessage) => Promise<void>;
@@ -24,118 +20,187 @@ export interface ClientRuntime {
 
 export interface CreateClientRuntimeOptions {
   enclaveClient?: AgentEnclaveClient;
-  contextStore?: ContextStore;
-  contextAssembler?: ContextAssembler;
-  modelConfig?: {
-    llm?: {
-      ollama?: {
-        baseUrl?: string;
-        model?: string;
-      };
-      cloud?: {
-        apiKey?: string;
-        baseURL?: string;
-        model?: string;
-      };
-    };
-    embedding?: {
-      provider?: "ollama" | "native";
-      ollamaBaseUrl?: string;
-      ollamaModel?: string;
-    };
-  };
+  vfsClient?: MemoryVfsClient;
 }
 
-const SESSION_DEBUG_LOG_PATH = join(
-  process.cwd(),
-  ".memoh-debug",
-  "session-control-blocks.log"
-);
+const BOT_UID = "kairos-bot";
 
 export function createClientRuntime(options: CreateClientRuntimeOptions): ClientRuntime {
-  const enclaveClient =
-    options.enclaveClient;
+  const enclaveClient = options.enclaveClient;
   if (!enclaveClient) {
-    throw new Error("createClientRuntime requires either agent or enclaveClient.");
+    throw new Error("createClientRuntime requires enclaveClient.");
   }
 
-  const contextStore =
-    options.contextStore ?? createInMemoryContextStore({
-      embedder: createDenseEmbedder({
-        provider: options.modelConfig?.embedding?.provider,
-        ollamaBaseUrl: options.modelConfig?.embedding?.ollamaBaseUrl,
-        ollamaModel: options.modelConfig?.embedding?.ollamaModel,
+  const vfs = options.vfsClient ?? new MemoryVfsClient();
+
+  // Init session in background so call() works
+  let sessionReady = false;
+  const taskId = `daemon-${Date.now()}`;
+  vfs.initSession(taskId, "kairos-daemon").then(() => {
+    sessionReady = true;
+    console.log("[clientRuntime] logos session ready");
+    // Create daemon task in system
+    vfs.write({
+      path: "logos://system/tasks",
+      content: JSON.stringify({
+        task_id: taskId, description: "kairos daemon", chat_id: "", trigger: "daemon",
       }),
-      localModel: createOllamaLocalModel({
-        baseUrl: options.modelConfig?.llm?.ollama?.baseUrl,
-        model: options.modelConfig?.llm?.ollama?.model,
-      }),
-      cloudModel: createOpenAICloudModel({
-        apiKey: options.modelConfig?.llm?.cloud?.apiKey,
-        baseURL: options.modelConfig?.llm?.cloud?.baseURL,
-        model: options.modelConfig?.llm?.cloud?.model,
-      }),
-    });
-  const contextAssembler = options.contextAssembler ?? createContextAssembler();
+    }).catch(() => {});
+  }).catch(e => {
+    console.error("[clientRuntime] logos session failed:", e);
+  });
 
   const recordMessage: ClientRuntime["recordMessage"] = async (message) => {
-    await contextStore.ingestMessage({ message });
-    const lines: string[] = [];
-    contextStore.debugPrintSessionControlBlocks({
-      chatId: message.chatId,
-      log: (...args: unknown[]) => {
-        lines.push(args.map((arg) => inspect(arg, { depth: null, compact: true })).join(" "));
-      },
-    });
-    if (lines.length > 0) {
-      await mkdir(join(process.cwd(), ".memoh-debug"), { recursive: true });
-      const stamp = new Date().toISOString();
-      const header = `\n[${stamp}] chatId=${message.chatId} messageId=${message.messageId}\n`;
-      await appendFile(SESSION_DEBUG_LOG_PATH, `${header}${lines.join("\n")}\n`, "utf8");
+    try {
+      await vfs.write({
+        path: `logos://memory/groups/${message.chatId}/messages`,
+        content: JSON.stringify({
+          msg_id: message.messageId,
+          chat_id: String(message.chatId),
+          speaker: message.senderName ?? message.userId?.toString() ?? "unknown",
+          text: message.text,
+          reply_to: message.replyToMessageId ?? null,
+          ts: new Date(message.timestamp * 1000).toISOString(),
+          mentions: JSON.stringify(message.mentions ?? []),
+        }),
+      });
+    } catch (error) {
+      console.error(`[clientRuntime] record message failed:`, error);
     }
   };
 
   const streamReply: ClientRuntime["streamReply"] = ({ triggerMessage, prompt }) => {
     const stream = new RemoteAsyncIterable<string>();
-    const [recentMessages, sessionMessages] = contextStore.getContextByAnchor({
-      chatId: triggerMessage.chatId,
-      messageId: triggerMessage.messageId,
-    });
-    const llmMessages = contextAssembler.build({
-      contextMessages: sessionMessages,
-      recentMessages,
-      triggerMessage,
-      systemPrompt: system(),
-    });
-    // console.log("llmMessages", llmMessages);
+
     void (async () => {
       try {
+        // 1. Get context from logos (session + summary + persona paths)
+        let contextJson: any = {};
+        if (sessionReady) {
+          try {
+            const resp = await vfs.call({
+              tool: "system.get_context",
+              params: {
+                chat_id: String(triggerMessage.chatId),
+                sender_uid: triggerMessage.userId?.toString() ?? "unknown",
+                msg_id: triggerMessage.messageId,
+              },
+            });
+            contextJson = typeof resp === "string" ? JSON.parse(resp) : resp;
+          } catch (e) {
+            console.error("[clientRuntime] get_context failed:", e);
+          }
+        }
+
+        // 2. Read persona from logos
+        let personaLong = "";
+        let personaMid = "";
+        if (contextJson.persona_paths) {
+          try {
+            const r = await vfs.read({ path: contextJson.persona_paths.long });
+            personaLong = r.content || "";
+          } catch {}
+          try {
+            const r = await vfs.read({ path: contextJson.persona_paths.mid });
+            personaMid = r.content || "";
+          } catch {}
+        }
+        // Also read bot's own persona
+        let botPersona = "";
+        try {
+          const r = await vfs.read({ path: `logos://users/${BOT_UID}/persona/long.md` });
+          botPersona = r.content || "";
+        } catch {}
+
+        // 3. Build system prompt with logos context
+        const systemPrompt = buildSystemPrompt(contextJson, botPersona, personaLong, personaMid);
+        const messages = buildLlmMessages(triggerMessage, prompt, contextJson, systemPrompt);
+
+        // 4. Stream from enclave
         for await (const event of enclaveClient.streamReply({
           chatId: triggerMessage.chatId,
-          messages: llmMessages,
+          messages,
           imageUrls: triggerMessage.imageUrls,
         })) {
           if (event.type === "message_update" && event.role === "assistant" && event.delta) {
             stream.push(event.delta);
-            continue;
-          }
-          if (event.type === "failed") {
+          } else if (event.type === "failed") {
             throw new Error(event.error);
-          }
-          if (event.type === "completed") {
+          } else if (event.type === "completed") {
             break;
           }
         }
+
         stream.end();
       } catch (error) {
         stream.fail(error);
       }
     })();
+
     return stream;
   };
 
-  return {
-    recordMessage,
-    streamReply,
-  };
+  return { recordMessage, streamReply };
+}
+
+function buildSystemPrompt(
+  context: any,
+  botPersona: string,
+  senderPersonaLong: string,
+  senderPersonaMid: string,
+): string {
+  let prompt = `You are an AI agent running on the Logos kernel. All your capabilities come from 5 primitives: read, write, patch, exec, call.
+
+Current time: ${new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })}`;
+
+  if (botPersona) {
+    prompt += `\n\n## Your Persona\n${botPersona}`;
+  }
+
+  if (senderPersonaLong || senderPersonaMid) {
+    prompt += `\n\n## About the sender`;
+    if (senderPersonaLong) prompt += `\n${senderPersonaLong}`;
+    if (senderPersonaMid) prompt += `\n\nRecent: ${senderPersonaMid}`;
+  }
+
+  // Session context
+  if (context.session?.messages?.length > 0) {
+    prompt += "\n\n## Current Session\n";
+    for (const m of context.session.messages.slice(-15)) {
+      prompt += `[${m.speaker}]: ${m.text}\n`;
+    }
+  }
+
+  // Recent summary
+  if (context.recent_summary && context.recent_summary !== "null") {
+    const summary = typeof context.recent_summary === "string"
+      ? context.recent_summary
+      : JSON.stringify(context.recent_summary);
+    if (summary && summary !== "null") {
+      prompt += `\n\n## Recent Summary\n${summary}`;
+    }
+  }
+
+  return prompt;
+}
+
+function buildLlmMessages(
+  trigger: TelegramMessage,
+  prompt: string,
+  context: any,
+  systemPrompt: string,
+): Array<{ role: string; content: string }> {
+  const messages: Array<{ role: string; content: string }> = [];
+  messages.push({ role: "system", content: systemPrompt });
+
+  // Inject recent session as conversation history
+  if (context.session?.messages) {
+    for (const m of context.session.messages.slice(-10)) {
+      const role = m.speaker === "assistant" ? "assistant" : "user";
+      messages.push({ role, content: m.text });
+    }
+  }
+
+  messages.push({ role: "user", content: prompt });
+  return messages;
 }
