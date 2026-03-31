@@ -119,6 +119,15 @@ function safeSerializeResult(result: unknown): string {
   }
 }
 
+// Init logos session for enclave tools (exec/call need auth)
+const LOGOS_SOCKET = process.env.LOGOS_SOCKET ?? process.env.KAIROS_VFS_SOCKET ?? "/tmp/logos-sandbox/logos.sock";
+process.env.LOGOS_SOCKET = LOGOS_SOCKET;
+initLogosSession(`enclave-${Date.now()}`, "kairos-enclave").then(() => {
+  console.log("[enclave] logos session ready");
+}).catch(e => {
+  console.error("[enclave] logos session failed:", e);
+});
+
 const enclaveRuntime = createOpenAIEnclaveRuntime({
   apiKey: API_KEY,
   model,
