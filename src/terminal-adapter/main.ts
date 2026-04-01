@@ -49,6 +49,15 @@ if (LOGOS_SOCKET) {
   });
 }
 
+// Suppress noisy pi-agent-core debug logs
+const origLog = console.log;
+console.log = (...args: any[]) => {
+  const first = String(args[0] ?? "");
+  if (first.startsWith("[loopRunner]") || first.startsWith("[dynamic-tools]")
+    || first.startsWith("tool_execution") || first.startsWith("{")) return;
+  origLog(...args);
+};
+
 const runtime = createOpenAIEnclaveRuntime({
   apiKey: API_KEY,
   model: MODEL,
@@ -92,21 +101,35 @@ const messages = [
 
 let fullOutput = "";
 for await (const event of runtime.streamEvents(messages)) {
-  if (event.type === "message_update") {
-    process.stderr.write(event.delta);
-    fullOutput += event.delta;
-  } else if (event.type === "tool_execution_start") {
-    process.stderr.write(`\n  [${event.toolName}] `);
-  } else if (event.type === "tool_execution_end") {
-    const preview = typeof event.result === "string"
-      ? event.result.slice(0, 80)
-      : JSON.stringify(event.result)?.slice(0, 80) ?? "";
-    process.stderr.write(`${preview}\n`);
-  } else if (event.type === "completed") {
-    break;
-  } else if (event.type === "failed") {
-    console.error(`\n[terminal] failed: ${event.error}`);
-    process.exit(1);
+  switch (event.type) {
+    case "message_update":
+      if (event.delta) {
+        process.stderr.write(event.delta);
+        fullOutput += event.delta;
+      }
+      break;
+    case "tool_execution_start":
+      process.stderr.write(`\n  [${event.toolName}] `);
+      break;
+    case "tool_execution_end": {
+      const result = event.result;
+      let preview = "";
+      if (result && typeof result === "object" && "content" in result) {
+        const content = (result as any).content;
+        if (Array.isArray(content) && content[0]?.text) {
+          preview = content[0].text.slice(0, 120);
+        }
+      } else if (typeof result === "string") {
+        preview = result.slice(0, 120);
+      }
+      process.stderr.write(`${preview}\n`);
+      break;
+    }
+    case "completed":
+      break;
+    case "failed":
+      console.error(`\n[terminal] failed: ${event.error}`);
+      process.exit(1);
   }
 }
 
