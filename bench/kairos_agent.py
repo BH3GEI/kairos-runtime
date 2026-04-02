@@ -1,232 +1,153 @@
 """
-Kairos agent for Harbor / Terminal-Bench.
+Kairos Installed Agent for Harbor / Terminal-Bench.
 
-External agent that uses the same LLM and tool-calling approach as
-kairos-runtime's terminal-adapter, but executes commands through
-Harbor's environment.exec() so results land inside the benchmark container.
+Installs bun + kairos-runtime + logos-kernel inside the Harbor container,
+then runs the real kairos terminal-adapter with SANDBOX_MODE=host.
+logos_exec commands execute directly in the container — no separate sandbox.
 
 Usage:
     harbor run -d terminal-bench/terminal-bench-2 \
         --agent-import-path bench.kairos_agent:KairosAgent \
+        -m anthropic/claude-opus-4-6 \
         ...
 """
 
-import json
 import os
+import shlex
+from pathlib import Path
 from typing import Optional
 
-from harbor.agents.base import BaseAgent
+from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
-import openai
+
+# Where kairos-runtime lives inside the container
+KAIROS_DIR = "/opt/kairos"
+LOGOS_BIN = "/usr/local/bin/logos-kernel"
+LOGOS_SOCKET = "/tmp/logos.sock"
 
 
-SYSTEM_PROMPT = """You are an autonomous coding agent. Solve the task using the tools provided.
-
-Rules:
-- Use bash_exec to run shell commands in the environment.
-- Use write_file to create or overwrite files.
-- Use read_file to read file contents.
-- Be concise. Do not explain unless asked.
-- When the task is done, stop calling tools.
-"""
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "bash_exec",
-            "description": "Execute a bash command in the environment. Returns stdout, stderr, and exit code.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "The bash command to execute."},
-                },
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Write content to a file (creates or overwrites).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Absolute file path."},
-                    "content": {"type": "string", "description": "File content."},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read a file and return its contents.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Absolute file path."},
-                },
-                "required": ["path"],
-            },
-        },
-    },
-]
-
-MAX_TURNS = 30
-MAX_OUTPUT_CHARS = 16000
-
-
-class KairosAgent(BaseAgent):
+class KairosAgent(BaseInstalledAgent):
 
     @staticmethod
     def name() -> str:
         return "kairos"
 
     def version(self) -> Optional[str]:
-        return "0.1.0"
+        return "0.2.0"
 
-    async def setup(self, environment: BaseEnvironment) -> None:
+    def get_version_command(self) -> str | None:
+        return f"cat {KAIROS_DIR}/package.json 2>/dev/null | grep version | head -1"
+
+    def parse_version(self, stdout: str) -> str:
+        import re
+        match = re.search(r'"version"\s*:\s*"([^"]+)"', stdout)
+        return match.group(1) if match else stdout.strip()
+
+    async def install(self, environment: BaseEnvironment) -> None:
+        # 1. Install system deps
+        await self.exec_as_root(
+            environment,
+            command=(
+                "apt-get update && apt-get install -y --no-install-recommends "
+                "curl unzip git ca-certificates gzip && "
+                "rm -rf /var/lib/apt/lists/*"
+            ),
+            env={"DEBIAN_FRONTEND": "noninteractive"},
+        )
+
+        # 2. Install bun
+        await self.exec_as_agent(
+            environment,
+            command=(
+                "curl -fsSL https://bun.sh/install | bash && "
+                'export BUN_INSTALL="$HOME/.bun" && '
+                'export PATH="$BUN_INSTALL/bin:$PATH" && '
+                "bun --version"
+            ),
+        )
+
+        # 3. Clone kairos-runtime and install deps
+        await self.exec_as_agent(
+            environment,
+            command=(
+                'export PATH="$HOME/.bun/bin:$PATH" && '
+                f"git clone --depth 1 -b feat/logos-native https://github.com/BH3GEI/kairos-runtime.git {KAIROS_DIR} && "
+                f"cd {KAIROS_DIR} && bun install --frozen-lockfile 2>/dev/null || bun install"
+            ),
+        )
+
+        # 4. Upload and install logos-kernel binary (pre-compiled Linux arm64)
+        logos_gz = os.environ.get("LOGOS_KERNEL_GZ", os.path.expanduser("~/.kairos-bench/logos-kernel.gz"))
+        if os.path.exists(logos_gz):
+            await environment.upload_file(logos_gz, "/tmp/logos-kernel.gz")
+            await self.exec_as_root(
+                environment,
+                command=(
+                    f"gunzip -c /tmp/logos-kernel.gz > {LOGOS_BIN} && "
+                    f"chmod +x {LOGOS_BIN} && "
+                    f"echo 'logos-kernel installed'"
+                ),
+            )
+        else:
+            self.logger.warning(f"logos-kernel.gz not found at {logos_gz}, skipping")
+
+    def populate_context_post_run(self, context: AgentContext) -> None:
+        # TODO: parse terminal-adapter output for token counts
         pass
 
+    @with_prompt_template
     async def run(
         self,
         instruction: str,
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        api_key = os.environ.get("KAIROS_API_KEY") or os.environ.get("API_KEY", "")
-        base_url = os.environ.get("KAIROS_BASE_URL") or os.environ.get("BASE_URL", "https://api.kimi.com/coding/v1")
-        model = os.environ.get("KAIROS_MODEL") or os.environ.get("MODEL", "kimi-for-coding")
-        force_ua = os.environ.get("KAIROS_USER_AGENT", "RooCode/0.1.9")
+        escaped = shlex.quote(instruction)
 
-        client = openai.AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            default_headers={"User-Agent": force_ua} if force_ua else {},
-            timeout=300.0,
+        # Get LLM config from env
+        api_key = os.environ.get("KAIROS_API_KEY", "")
+        base_url = os.environ.get("KAIROS_BASE_URL", "")
+        model = os.environ.get("KAIROS_MODEL", "claude-opus-4-6")
+        user_agent = os.environ.get("KAIROS_USER_AGENT", "")
+
+        env = {
+            "API_KEY": api_key,
+            "BASE_URL": base_url,
+            "MODEL": model,
+            "LOGOS_SOCKET": LOGOS_SOCKET,
+            "SANDBOX_MODE": "host",
+            "LOGOS_DATA_DIR": "/tmp/logos-data",
+        }
+        if user_agent:
+            env["OPENAI_FORCE_USER_AGENT"] = user_agent
+
+        # Start logos-kernel in background, then run terminal-adapter
+        await self.exec_as_agent(
+            environment,
+            command=(
+                'export PATH="$HOME/.bun/bin:$PATH" && '
+                # Start logos-kernel if binary exists
+                f"if [ -x {LOGOS_BIN} ]; then "
+                f"  mkdir -p /tmp/logos-data/state/sandbox /tmp/logos-data/state/memory && "
+                f"  SANDBOX_MODE=host LOGOS_DATA_DIR=/tmp/logos-data "
+                f"  VFS_SANDBOX_ROOT=/tmp/logos-data/state/sandbox "
+                f"  {LOGOS_BIN} > /tmp/logos-kernel.log 2>&1 & "
+                f"  LOGOS_PID=$! && "
+                # Wait for socket
+                f"  for i in $(seq 1 30); do "
+                f"    [ -S {LOGOS_SOCKET} ] && break; "
+                f"    sleep 0.5; "
+                f"  done && "
+                f"  echo '[kairos] logos-kernel ready (pid '$LOGOS_PID')'; "
+                f"else "
+                f"  echo '[kairos] no logos-kernel, running without'; "
+                f"fi && "
+                # Run terminal-adapter
+                f"cd {KAIROS_DIR} && "
+                f"bun run src/terminal-adapter/main.ts {escaped} "
+                f"2>&1 | tee /logs/agent/kairos-output.txt"
+            ),
+            env=env,
         )
-
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": instruction},
-        ]
-
-        total_input_tokens = 0
-        total_output_tokens = 0
-
-        for turn in range(MAX_TURNS):
-            try:
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=TOOLS,
-                    max_tokens=4096,
-                )
-            except Exception as e:
-                self.logger.error(f"LLM error on turn {turn}: {e}")
-                break
-
-            # Track token usage
-            if response.usage:
-                total_input_tokens += response.usage.prompt_tokens or 0
-                total_output_tokens += response.usage.completion_tokens or 0
-
-            choice = response.choices[0]
-            msg = choice.message
-
-            # Build assistant message for conversation history
-            # Preserve reasoning_content for reasoning models (kimi, deepseek-r1, etc.)
-            assistant_msg: dict = {"role": "assistant", "content": msg.content or ""}
-
-            # Handle reasoning_content if present (needed by reasoning models)
-            reasoning = getattr(msg, "reasoning_content", None)
-            if reasoning:
-                assistant_msg["reasoning_content"] = reasoning
-
-            if msg.tool_calls:
-                assistant_msg["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in msg.tool_calls
-                ]
-            messages.append(assistant_msg)
-
-            # If no tool calls, agent is done
-            if not msg.tool_calls:
-                break
-
-            # Execute tool calls
-            for tc in msg.tool_calls:
-                fn_name = tc.function.name
-                try:
-                    args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    args = {}
-
-                result = await self._execute_tool(fn_name, args, environment)
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result[:MAX_OUTPUT_CHARS],
-                })
-
-            if choice.finish_reason == "stop":
-                break
-
-        # Populate context with token usage
-        context.n_input_tokens = total_input_tokens
-        context.n_output_tokens = total_output_tokens
-
-    async def _execute_tool(
-        self, name: str, args: dict, env: BaseEnvironment
-    ) -> str:
-        try:
-            if name == "bash_exec":
-                cmd = args.get("command", "")
-                result = await env.exec(cmd)
-                output = ""
-                if result.stdout:
-                    output += result.stdout
-                if result.stderr:
-                    output += ("\n" if output else "") + result.stderr
-                if result.return_code != 0:
-                    output += f"\n[exit code: {result.return_code}]"
-                return output or "(no output)"
-
-            elif name == "write_file":
-                path = args.get("path", "")
-                content = args.get("content", "")
-                # Use base64 to avoid heredoc escaping issues
-                import base64
-                b64 = base64.b64encode(content.encode()).decode()
-                cmd = f"mkdir -p $(dirname '{path}') && echo '{b64}' | base64 -d > '{path}'"
-                result = await env.exec(cmd)
-                if result.return_code != 0:
-                    return f"write error: {result.stderr}"
-                return "ok"
-
-            elif name == "read_file":
-                path = args.get("path", "")
-                result = await env.exec(f"cat '{path}'")
-                if result.return_code != 0:
-                    return f"read error: {result.stderr}"
-                return result.stdout or "(empty)"
-
-            else:
-                return f"unknown tool: {name}"
-
-        except Exception as e:
-            return f"tool error: {e}"

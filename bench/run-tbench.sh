@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# Run Terminal-Bench 2.0 with kairos agent.
+# Run Terminal-Bench 2.0 with kairos installed agent.
 #
 # Usage:
-#   ./bench/run-tbench.sh                    # run full benchmark (4 concurrent)
-#   ./bench/run-tbench.sh --n-tasks 5        # run first 5 tasks only
+#   ./bench/run-tbench.sh                    # run full benchmark
+#   ./bench/run-tbench.sh --n-tasks 5        # run first 5 tasks
 #   ./bench/run-tbench.sh --dry-run          # just print the command
 #
-# Required env vars (set below or export before running):
+# Required env vars:
 #   KAIROS_API_KEY    - LLM API key
-#   KAIROS_BASE_URL   - LLM API base URL
+#   KAIROS_BASE_URL   - LLM API base URL (OpenAI-compatible)
 #   KAIROS_MODEL      - LLM model name
 #
 set -euo pipefail
@@ -17,17 +17,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# ── LLM config (edit these or export before running) ──────────────────────────
+# ── LLM config ────────────────────────────────────────────────────────────────
 export KAIROS_API_KEY="${KAIROS_API_KEY:?Set KAIROS_API_KEY before running}"
-export KAIROS_BASE_URL="${KAIROS_BASE_URL:-https://api.kimi.com/coding/v1}"
-export KAIROS_MODEL="${KAIROS_MODEL:-kimi-for-coding}"
-export KAIROS_USER_AGENT="${KAIROS_USER_AGENT:-RooCode/0.1.9}"
+export KAIROS_BASE_URL="${KAIROS_BASE_URL:-https://api.anthropic.com/v1}"
+export KAIROS_MODEL="${KAIROS_MODEL:-claude-opus-4-6}"
+export KAIROS_USER_AGENT="${KAIROS_USER_AGENT:-}"
 
 # ── Harbor config ─────────────────────────────────────────────────────────────
 DATASET="terminal-bench/terminal-bench-2"
 AGENT_PATH="bench.kairos_agent:KairosAgent"
 JOBS_DIR="${REPO_DIR}/bench/jobs"
 N_CONCURRENT="${N_CONCURRENT:-4}"
+TIMEOUT_MULT="${TIMEOUT_MULT:-3.0}"
 
 # ── Parse args ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -51,36 +52,25 @@ check() {
 check harbor "Install with: uv tool install harbor"
 check docker "Docker is required for Harbor environments."
 
-if [[ -z "$KAIROS_API_KEY" ]]; then
-    echo "ERROR: KAIROS_API_KEY is not set." >&2
-    exit 1
-fi
-
-# Quick LLM connectivity check
-echo "[pre-flight] checking LLM connectivity..."
+echo "[pre-flight] checking LLM..."
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "${KAIROS_BASE_URL}/chat/completions" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${KAIROS_API_KEY}" \
-    -H "User-Agent: ${KAIROS_USER_AGENT}" \
+    -H "x-api-key: ${KAIROS_API_KEY}" \
+    ${KAIROS_USER_AGENT:+-H "User-Agent: ${KAIROS_USER_AGENT}"} \
     -d '{"model":"'"${KAIROS_MODEL}"'","messages":[{"role":"user","content":"hi"}],"max_tokens":5}' \
-    --max-time 10 2>/dev/null || echo "000")
-
-if [[ "$HTTP_CODE" != "200" ]]; then
-    echo "WARNING: LLM API returned HTTP $HTTP_CODE (might still work for streaming)" >&2
-fi
-echo "[pre-flight] LLM check done (HTTP $HTTP_CODE)"
+    --max-time 15 2>/dev/null || echo "000")
+echo "[pre-flight] LLM HTTP $HTTP_CODE"
 
 # ── Build command ─────────────────────────────────────────────────────────────
-TIMEOUT_MULT="${TIMEOUT_MULT:-3.0}"  # generous timeout for slow networks
-
 CMD=(
     harbor run
     -d "$DATASET"
     --agent-import-path "$AGENT_PATH"
     -n "$N_CONCURRENT"
     -o "$JOBS_DIR"
-    -y  # auto-confirm env var prompts
+    -y
     --timeout-multiplier "$TIMEOUT_MULT"
     --ae "KAIROS_API_KEY=${KAIROS_API_KEY}"
     --ae "KAIROS_BASE_URL=${KAIROS_BASE_URL}"
@@ -91,9 +81,9 @@ CMD=(
 
 echo ""
 echo "════════════════════════════════════════════════════════════════"
-echo "  Terminal-Bench 2.0  ×  Kairos Agent"
+echo "  Terminal-Bench 2.0  ×  Kairos + Logos (Installed Agent)"
 echo "  Model:   ${KAIROS_MODEL}"
-echo "  Dataset: ${DATASET}"
+echo "  API:     ${KAIROS_BASE_URL}"
 echo "  Jobs:    ${JOBS_DIR}"
 echo "════════════════════════════════════════════════════════════════"
 echo ""
@@ -102,7 +92,7 @@ echo "  ${CMD[*]}"
 echo ""
 
 if $DRY_RUN; then
-    echo "[dry-run] exiting without running."
+    echo "[dry-run] exiting."
     exit 0
 fi
 
