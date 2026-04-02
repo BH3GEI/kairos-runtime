@@ -116,6 +116,9 @@ class KairosAgent(BaseInstalledAgent):
         # Get LLM config from env
         api_key = os.environ.get("KAIROS_API_KEY", "")
         base_url = os.environ.get("KAIROS_BASE_URL", "")
+        # Inside Docker container, localhost refers to the container itself.
+        # Replace with host.docker.internal to reach the host machine.
+        base_url = base_url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
         model = os.environ.get("KAIROS_MODEL", "claude-opus-4-6")
         user_agent = os.environ.get("KAIROS_USER_AGENT", "")
 
