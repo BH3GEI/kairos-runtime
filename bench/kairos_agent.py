@@ -79,19 +79,26 @@ class KairosAgent(BaseInstalledAgent):
         )
 
         # 4. Upload and install logos-kernel binary (pre-compiled Linux arm64)
-        logos_gz = os.environ.get("LOGOS_KERNEL_GZ", os.path.expanduser("~/.kairos-bench/logos-kernel.gz"))
-        if os.path.exists(logos_gz):
+        # Look for binary in multiple places
+        candidates = [
+            os.environ.get("LOGOS_KERNEL_GZ", ""),
+            os.path.expanduser("~/.kairos-bench/logos-kernel.gz"),
+            os.path.join(os.path.dirname(__file__), "..", "logos-kernel.gz"),
+        ]
+        logos_gz = next((p for p in candidates if p and os.path.exists(p)), None)
+        if logos_gz:
+            self.logger.info(f"Uploading logos-kernel from {logos_gz}")
             await environment.upload_file(logos_gz, "/tmp/logos-kernel.gz")
             await self.exec_as_root(
                 environment,
                 command=(
                     f"gunzip -c /tmp/logos-kernel.gz > {LOGOS_BIN} && "
                     f"chmod +x {LOGOS_BIN} && "
-                    f"echo 'logos-kernel installed'"
+                    f"{LOGOS_BIN} --version 2>/dev/null || echo 'logos-kernel installed'"
                 ),
             )
         else:
-            self.logger.warning(f"logos-kernel.gz not found at {logos_gz}, skipping")
+            self.logger.warning(f"logos-kernel.gz not found, skipping. Looked in: {candidates}")
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         # TODO: parse terminal-adapter output for token counts
