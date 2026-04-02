@@ -25,7 +25,7 @@ from harbor.models.agent.context import AgentContext
 # Where kairos-runtime lives inside the container
 KAIROS_DIR = "/opt/kairos"
 LOGOS_BIN = "/usr/local/bin/logos-kernel"
-LOGOS_SOCKET = "/tmp/logos.sock"
+LOGOS_SOCKET = "/tmp/logos-data/state/sandbox/logos.sock"
 
 
 class KairosAgent(BaseInstalledAgent):
@@ -131,8 +131,9 @@ class KairosAgent(BaseInstalledAgent):
                 # Start logos-kernel if binary exists
                 f"if [ -x {LOGOS_BIN} ]; then "
                 f"  mkdir -p /tmp/logos-data/state/sandbox /tmp/logos-data/state/memory && "
-                f"  SANDBOX_MODE=host LOGOS_DATA_DIR=/tmp/logos-data "
-                f"  VFS_SANDBOX_ROOT=/tmp/logos-data/state/sandbox "
+                f"  export SANDBOX_MODE=host && "
+                f"  export LOGOS_DATA_DIR=/tmp/logos-data && "
+                f"  export VFS_SANDBOX_ROOT=/tmp/logos-data/state/sandbox && "
                 f"  {LOGOS_BIN} > /tmp/logos-kernel.log 2>&1 & "
                 f"  LOGOS_PID=$! && "
                 # Wait for socket
