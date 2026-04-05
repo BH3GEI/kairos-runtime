@@ -66,11 +66,16 @@ class KairosAgent(BaseInstalledAgent):
             ),
         )
 
-        # 3. Clone kairos-runtime and install deps
+        # 3. Clone kairos-runtime and install deps (retry on TLS errors)
         await self.exec_as_root(
             environment,
             command=(
-                f"git clone --depth 1 -b feat/logos-native https://github.com/BH3GEI/kairos-runtime.git {KAIROS_DIR} && "
+                f"for i in 1 2 3; do "
+                f"  git clone --depth 1 -b feat/logos-native https://github.com/BH3GEI/kairos-runtime.git {KAIROS_DIR} && break; "
+                f"  echo \"[kairos] clone attempt $i failed, retrying...\"; "
+                f"  rm -rf {KAIROS_DIR}; "
+                f"  sleep 3; "
+                f"done && "
                 f"cd {KAIROS_DIR} && bun install --production"
             ),
         )
