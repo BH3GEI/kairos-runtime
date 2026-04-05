@@ -122,6 +122,8 @@ class KairosAgent(BaseInstalledAgent):
         model = os.environ.get("KAIROS_MODEL", "claude-opus-4-6")
         user_agent = os.environ.get("KAIROS_USER_AGENT", "")
 
+        enclave_socket = "/tmp/kairos-enclave.sock"
+
         env = {
             "API_KEY": api_key,
             "BASE_URL": base_url,
@@ -129,11 +131,16 @@ class KairosAgent(BaseInstalledAgent):
             "LOGOS_SOCKET": LOGOS_SOCKET,
             "SANDBOX_MODE": "host",
             "LOGOS_DATA_DIR": "/tmp/logos-data",
+            "AGENT_ENCLAVE_TARGET": f"unix://{enclave_socket}",
+            "KAIROS_ENCLAVE_SOCKET": f"unix://{enclave_socket}",
+            "ENCLAVE_API_KEY": api_key,
+            "ENCLAVE_BASE_URL": base_url,
+            "ENCLAVE_MODEL": model,
         }
         if user_agent:
             env["OPENAI_FORCE_USER_AGENT"] = user_agent
 
-        # Start logos-kernel in background, then run terminal-adapter
+        # Start logos-kernel + enclave-runtime in background, then run cli-adapter
         await self.exec_as_agent(
             environment,
             command=(
@@ -146,7 +153,7 @@ class KairosAgent(BaseInstalledAgent):
                 f"  export VFS_SANDBOX_ROOT=/tmp/logos-data/state/sandbox && "
                 f"  {LOGOS_BIN} > /tmp/logos-kernel.log 2>&1 & "
                 f"  LOGOS_PID=$! && "
-                # Wait for socket
+                # Wait for logos socket
                 f"  for i in $(seq 1 30); do "
                 f"    [ -S {LOGOS_SOCKET} ] && break; "
                 f"    sleep 0.5; "
@@ -155,9 +162,19 @@ class KairosAgent(BaseInstalledAgent):
                 f"else "
                 f"  echo '[kairos] no logos-kernel, running without'; "
                 f"fi && "
-                # Run terminal-adapter
+                # Start enclave-runtime in background
                 f"cd {KAIROS_DIR} && "
-                f"bun run src/terminal-adapter/main.ts {escaped} "
+                f"AGENT_ENCLAVE_BIND_ADDR=unix://{enclave_socket} "
+                f"bun run src/enclave-runtime/main.ts > /tmp/enclave.log 2>&1 & "
+                f"ENCLAVE_PID=$! && "
+                # Wait for enclave socket
+                f"for i in $(seq 1 60); do "
+                f"  [ -S {enclave_socket} ] && break; "
+                f"  sleep 0.5; "
+                f"done && "
+                f"echo '[kairos] enclave-runtime ready (pid '$ENCLAVE_PID')' && "
+                # Run cli-adapter (full Telegram-equivalent pipeline)
+                f"bun run src/cli-adapter/main.ts {escaped} "
                 f"2>&1 | tee /logs/agent/kairos-output.txt"
             ),
             env=env,

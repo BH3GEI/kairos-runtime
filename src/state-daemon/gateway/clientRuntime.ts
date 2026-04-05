@@ -21,6 +21,7 @@ export interface ClientRuntime {
 export interface CreateClientRuntimeOptions {
   enclaveClient?: AgentEnclaveClient;
   vfsClient?: MemoryVfsClient;
+  botUid?: string;
 }
 
 const BOT_UID = "kairos-bot";
@@ -32,6 +33,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
   }
 
   const vfs = options.vfsClient ?? new MemoryVfsClient();
+  const botUid = options.botUid ?? BOT_UID;
 
   // Init session in background so call() works
   let sessionReady = false;
@@ -108,7 +110,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
         // Also read bot's own persona
         let botPersona = "";
         try {
-          const r = await vfs.read({ path: `logos://users/${BOT_UID}/persona/long.md` });
+          const r = await vfs.read({ path: `logos://users/${botUid}/persona/long.md` });
           botPersona = r.content || "";
         } catch {}
 
@@ -141,7 +143,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
               content: JSON.stringify({
                 msg_id: Date.now(),
                 chat_id: String(triggerMessage.chatId),
-                speaker: BOT_UID,
+                speaker: botUid,
                 text: fullReply,
                 reply_to: triggerMessage.messageId,
                 ts: new Date().toISOString(),
