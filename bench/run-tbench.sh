@@ -72,6 +72,7 @@ CMD=(
     -o "$JOBS_DIR"
     -y
     --timeout-multiplier "$TIMEOUT_MULT"
+    --override-memory-mb 2048
     --ae "KAIROS_API_KEY=${KAIROS_API_KEY}"
     --ae "KAIROS_BASE_URL=${KAIROS_BASE_URL}"
     --ae "KAIROS_MODEL=${KAIROS_MODEL}"

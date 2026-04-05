@@ -1,26 +1,31 @@
 #!/usr/bin/env bun
 /**
- * CLI adapter for kairos-runtime.
+ * CLI adapter for kairos-runtime — single-process mode.
  *
- * Full Telegram-equivalent pipeline: persona, context, memory — all through logos kernel.
- * Replaces terminal-adapter/main.ts (which bypassed clientRuntime entirely).
- *
- * Requires enclave-runtime running separately (same as Telegram mode).
+ * Directly invokes the OpenAI enclave runtime (no gRPC subprocess needed).
+ * Much lighter than the two-process setup; suitable for Harbor containers.
  *
  * Usage:
  *   bun run src/cli-adapter/main.ts "fix the bug in auth.ts"
  *   echo "deploy the service" | bun run src/cli-adapter/main.ts
  */
 
-import { createClientRuntime } from "../state-daemon/gateway/clientRuntime";
-import { createGrpcEnclaveClient } from "../state-daemon/enclave/client";
-import { MemoryVfsClient } from "../state-daemon/storage/vfs/client";
-import type { TelegramMessage } from "../state-daemon/types/message";
+import { createOpenAIEnclaveRuntime } from "../enclave-runtime/agent/core/openai";
+import { logosPrimitiveTools } from "../enclave-runtime/agent/tools/logosPrimitives";
+import { createFetchWebpageTool } from "../enclave-runtime/agent/tools";
 import * as readline from "node:readline";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const CLI_BOT_UID = "cli-agent";
+// Set up runtime env vars required by enclave internals (tools doc writer etc.)
+const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "../../..");
+process.env.MEMORY_FILES_ROOT ??= resolve(REPO_ROOT, ".runtime/memory_files");
+process.env.EVOLUTIONS_ROOT ??= resolve(REPO_ROOT, ".runtime/evolutions");
+process.env.RUNTIME_ROOT ??= resolve(REPO_ROOT, ".runtime");
+process.env.PROTO_ROOT ??= resolve(REPO_ROOT, ".runtime/proto");
+process.env.READ_FILE_SAFE_ROOT ??= REPO_ROOT;
 
-const CLI_PERSONA = `You are a coding agent operating inside a sandboxed Linux environment via the Logos kernel.
+const CLI_SYSTEM_PROMPT = `You are a coding agent operating inside a sandboxed Linux environment.
 Your job is to complete programming tasks by actually executing commands and writing files — not describing what you would do.
 
 ## Your tools
@@ -86,47 +91,31 @@ if (!input) {
   process.exit(1);
 }
 
-const enclaveTarget = process.env.AGENT_ENCLAVE_TARGET ?? process.env.KAIROS_ENCLAVE_SOCKET;
-if (!enclaveTarget) {
-  console.error("AGENT_ENCLAVE_TARGET or KAIROS_ENCLAVE_SOCKET required");
-  process.exit(1);
-}
+// Build tools
+const tools: any[] = [...logosPrimitiveTools];
+try { tools.push(createFetchWebpageTool()); } catch {}
 
-const enclaveClient = createGrpcEnclaveClient({ target: enclaveTarget });
-const vfs = new MemoryVfsClient();
+// Create enclave runtime directly (no gRPC)
+const runtime = createOpenAIEnclaveRuntime({
+  tools,
+  apiKey: process.env.API_KEY,
+  baseURL: process.env.BASE_URL,
+  model: process.env.MODEL,
+});
 
-// Write cli-agent persona so clientRuntime picks it up
-await vfs.write({
-  path: `logos://users/${CLI_BOT_UID}/persona/long.md`,
-  content: CLI_PERSONA,
-}).catch(() => {});
-
-const runtime = createClientRuntime({ enclaveClient, vfsClient: vfs, botUid: CLI_BOT_UID });
-
-const triggerMessage: TelegramMessage = {
-  userId: "cli-user",
-  messageId: Date.now(),
-  chatId: 0,
-  conversationType: "private",
-  context: input,
-  timestamp: Math.floor(Date.now() / 1000),
-  metadata: {
-    isBot: false,
-    username: "cli",
-    replyToMessageId: null,
-    replyToUserId: null,
-    isReplyToMe: false,
-    isMentionMe: false,
-    mentions: [],
-  },
-};
+const messages = [
+  { role: "system", content: CLI_SYSTEM_PROMPT },
+  { role: "user", content: input },
+];
 
 console.error(`[cli] task: ${input}`);
 
 let fullOutput = "";
-for await (const chunk of runtime.streamReply({ triggerMessage, prompt: input })) {
-  process.stderr.write(chunk);
-  fullOutput += chunk;
+for await (const event of runtime.streamEvents(messages as any)) {
+  if (event.type === "message_update" && event.role === "assistant" && event.delta) {
+    process.stderr.write(event.delta);
+    fullOutput += event.delta;
+  }
 }
 
 console.error("\n[cli] done");

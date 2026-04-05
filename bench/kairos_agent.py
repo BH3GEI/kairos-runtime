@@ -23,7 +23,7 @@ from harbor.models.agent.context import AgentContext
 
 
 # Where kairos-runtime lives inside the container
-KAIROS_DIR = "/opt/kairos"
+KAIROS_DIR = "/tmp/kairos"
 LOGOS_BIN = "/usr/local/bin/logos-kernel"
 LOGOS_SOCKET = "/tmp/logos-data/state/sandbox/logos.sock"
 
@@ -57,24 +57,21 @@ class KairosAgent(BaseInstalledAgent):
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
 
-        # 2. Install bun
-        await self.exec_as_agent(
+        # 2. Install bun (as root so it's available system-wide)
+        await self.exec_as_root(
             environment,
             command=(
-                "curl -fsSL https://bun.sh/install | bash && "
-                'export BUN_INSTALL="$HOME/.bun" && '
-                'export PATH="$BUN_INSTALL/bin:$PATH" && '
+                "curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash && "
                 "bun --version"
             ),
         )
 
         # 3. Clone kairos-runtime and install deps
-        await self.exec_as_agent(
+        await self.exec_as_root(
             environment,
             command=(
-                'export PATH="$HOME/.bun/bin:$PATH" && '
                 f"git clone --depth 1 -b feat/logos-native https://github.com/BH3GEI/kairos-runtime.git {KAIROS_DIR} && "
-                f"cd {KAIROS_DIR} && bun install --frozen-lockfile 2>/dev/null || bun install"
+                f"cd {KAIROS_DIR} && bun install --production"
             ),
         )
 
@@ -131,20 +128,14 @@ class KairosAgent(BaseInstalledAgent):
             "LOGOS_SOCKET": LOGOS_SOCKET,
             "SANDBOX_MODE": "host",
             "LOGOS_DATA_DIR": "/tmp/logos-data",
-            "AGENT_ENCLAVE_TARGET": f"unix://{enclave_socket}",
-            "KAIROS_ENCLAVE_SOCKET": f"unix://{enclave_socket}",
-            "ENCLAVE_API_KEY": api_key,
-            "ENCLAVE_BASE_URL": base_url,
-            "ENCLAVE_MODEL": model,
         }
         if user_agent:
             env["OPENAI_FORCE_USER_AGENT"] = user_agent
 
-        # Start logos-kernel + enclave-runtime in background, then run cli-adapter
+        # Single-process: cli-adapter embeds the enclave runtime directly (no gRPC subprocess)
         await self.exec_as_agent(
             environment,
             command=(
-                'export PATH="$HOME/.bun/bin:$PATH" && '
                 # Start logos-kernel if binary exists
                 f"if [ -x {LOGOS_BIN} ]; then "
                 f"  mkdir -p /tmp/logos-data/state/sandbox /tmp/logos-data/state/memory && "
@@ -162,19 +153,9 @@ class KairosAgent(BaseInstalledAgent):
                 f"else "
                 f"  echo '[kairos] no logos-kernel, running without'; "
                 f"fi && "
-                # Start enclave-runtime in background
                 f"cd {KAIROS_DIR} && "
-                f"AGENT_ENCLAVE_BIND_ADDR=unix://{enclave_socket} "
-                f"bun run src/enclave-runtime/main.ts > /tmp/enclave.log 2>&1 & "
-                f"ENCLAVE_PID=$! && "
-                # Wait for enclave socket
-                f"for i in $(seq 1 60); do "
-                f"  [ -S {enclave_socket} ] && break; "
-                f"  sleep 0.5; "
-                f"done && "
-                f"echo '[kairos] enclave-runtime ready (pid '$ENCLAVE_PID')' && "
-                # Run cli-adapter (full Telegram-equivalent pipeline)
-                f"bun run src/cli-adapter/main.ts {escaped} "
+                # Run cli-adapter (single process, embeds agent loop directly)
+                f"bun {KAIROS_DIR}/src/cli-adapter/main.ts {escaped} "
                 f"2>&1 | tee /logs/agent/kairos-output.txt"
             ),
             env=env,
